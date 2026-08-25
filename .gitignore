@@ -1,0 +1,25 @@
+# Build products
+build/
+Debug/
+Release/
+
+*.o
+*.d
+*.lst
+*.elf
+*.hex
+*.bin
+*.map
+
+# Editor and OS-local files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# IAR local/generated state
+EWARM/Debug/
+EWARM/settings/
+*.dep
+*.ewt
+
