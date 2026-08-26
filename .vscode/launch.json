@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "STM32F103C8T6 (ST-Link)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "cwd": "${workspaceFolder}",
+            "executable": "${workspaceFolder}/build/led-test.elf",
+            "preLaunchTask": "Build STM32",
+            "servertype": "stlink",
+            "stlinkPath": "C:/Users/ADMIN/AppData/Local/stm32cube/bundles/stlink-gdbserver/7.14.0+st.2/bin/ST-LINK_gdbserver.exe",
+            "device": "STM32F103C8T6",
+            "interface": "swd",
+            "runToEntryPoint": "main",
+            "armToolchainPath": "C:/Program Files (x86)/Arm GNU Toolchain/12.2 mpacbti-rel1/bin",
+            "showDevDebugOutput": "raw"
+        }
+    ]
+}

@@ -30,6 +30,16 @@ Period    = 9
 
 工程使用 STM32CubeMX 生成的 Makefile。编译产物位于 `build/`，该目录不提交到 Git。
 
+## VS Code 编译与烧录
+
+工程已添加 `.vscode/tasks.json` 和 `.vscode/launch.json`：
+
+- `Ctrl+Shift+B`：调用 `mingw32-make` 编译；
+- `Ctrl+Shift+P` → `Tasks: Run Task` → `Flash STM32 (HEX)`：先编译，再通过 ST-Link/SWD 烧录并复位；
+- `F5`：使用 Cortex-Debug 和 ST-LINK GDB Server 编译、下载并进入 `main` 断点。
+
+烧录前确认 ST-Link 已连接、目标板已供电，并且 ST-Link 与目标板共地。
+
 ## 已验证现象
 
 - 工程可以成功编译并生成 ELF、HEX 和 BIN；
