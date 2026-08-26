@@ -11,6 +11,8 @@
 - 主循环派生 10 ms、100 ms 和 1000 ms 三档非阻塞周期任务；
 - 10 ms、100 ms 任务分别统计执行次数；
 - 1000 ms 任务翻转 LED，并发送系统时间与任务计数日志；
+- 新增 `Core/Inc/bms_types.h`，定义 `BmsData`、`BmsConfig`、`BmsFault` 和故障码；
+- BMS 数据采用固定点整数单位：电压 mV、电流 mA、温度 0.01 °C；
 - 主循环不使用 `HAL_Delay()` 进行任务调度。
 
 ## TIM2 参数
@@ -49,4 +51,4 @@ Period    = 9
 
 ## 下一步
 
-定义 `BmsData`、`BmsConfig` 和 `BmsFault`，为 ADC 采集与保护状态机准备数据模型。
+下一步实现 ADC 多通道采样接口，把原始 ADC 值转换为 `BmsData`。

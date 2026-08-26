@@ -24,6 +24,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "bms_types.h"
 #include <stdio.h>
 
 /* USER CODE END Includes */
@@ -52,6 +53,9 @@ uint32_t last_100ms = 0;
 uint32_t last_1000ms = 0;
 uint32_t count_10ms = 0;
 uint32_t count_100ms = 0;
+static BmsData g_bms_data = {0};
+static BmsConfig g_bms_config = {0};
+static BmsFault g_bms_fault = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -172,6 +176,7 @@ void SystemClock_Config(void)
 static void Task_10ms(void)
 {
   count_10ms++;
+  g_bms_data.timestamp_ms = g_system_ms;
 }
 
 static void Task_100ms(void)
@@ -188,10 +193,13 @@ static void Task_1000ms(void)
 
   length = snprintf(message,
                     sizeof(message),
-                    "time=%lu ms, 10ms=%lu, 100ms=%lu\r\n",
+                    "time=%lu ms, 10ms=%lu, 100ms=%lu, valid=%u, fault=0x%08lx, cfg_ov=%u\r\n",
                     (unsigned long)g_system_ms,
                     (unsigned long)count_10ms,
-                    (unsigned long)count_100ms);
+                    (unsigned long)count_100ms,
+                    (unsigned int)g_bms_data.valid,
+                    (unsigned long)g_bms_fault.flags,
+                    (unsigned int)g_bms_config.over_voltage_mv);
 
   if (length > 0) {
     if (length > (int)sizeof(message)) {
