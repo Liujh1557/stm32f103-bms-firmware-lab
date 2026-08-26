@@ -24,6 +24,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
 
 /* USER CODE END Includes */
 
@@ -46,12 +47,19 @@
 
 /* USER CODE BEGIN PV */
 volatile uint32_t g_system_ms = 0;
+uint32_t last_10ms = 0;
+uint32_t last_100ms = 0;
 uint32_t last_1000ms = 0;
+uint32_t count_10ms = 0;
+uint32_t count_100ms = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+static void Task_10ms(void);
+static void Task_100ms(void);
+static void Task_1000ms(void);
 
 /* USER CODE END PFP */
 
@@ -106,14 +114,19 @@ int main(void)
     /* USER CODE BEGIN 3 */
     uint32_t now = g_system_ms;
 
+    if ((uint32_t)(now - last_10ms) >= 10U) {
+      last_10ms += 10U;
+      Task_10ms();
+    }
+
+    if ((uint32_t)(now - last_100ms) >= 100U) {
+      last_100ms += 100U;
+      Task_100ms();
+    }
+
     if ((uint32_t)(now - last_1000ms) >= 1000U) {
       last_1000ms += 1000U;
-
-      HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-
-      uint8_t message[] = "system running\r\n";
-
-      HAL_UART_Transmit(&huart1, message, sizeof(message) - 1, 100);
+      Task_1000ms();
     }
   }
   /* USER CODE END 3 */
@@ -156,6 +169,42 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
+static void Task_10ms(void)
+{
+  count_10ms++;
+}
+
+static void Task_100ms(void)
+{
+  count_100ms++;
+}
+
+static void Task_1000ms(void)
+{
+  char message[96];
+  int length;
+
+  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+
+  length = snprintf(message,
+                    sizeof(message),
+                    "time=%lu ms, 10ms=%lu, 100ms=%lu\r\n",
+                    (unsigned long)g_system_ms,
+                    (unsigned long)count_10ms,
+                    (unsigned long)count_100ms);
+
+  if (length > 0) {
+    if (length > (int)sizeof(message)) {
+      length = (int)sizeof(message);
+    }
+
+    HAL_UART_Transmit(&huart1,
+                      (uint8_t *)message,
+                      (uint16_t)length,
+                      100);
+  }
+}
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Instance == TIM2)
