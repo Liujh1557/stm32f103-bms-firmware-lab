@@ -13,6 +13,9 @@
 - 1000 ms 任务翻转 LED，并发送系统时间与任务计数日志；
 - 新增 `Core/Inc/bms_types.h`，定义 `BmsData`、`BmsConfig`、`BmsFault` 和故障码；
 - BMS 数据采用固定点整数单位：电压 mV、电流 mA、温度 0.01 °C；
+- ADC1 扫描 PA0～PA6 共 7 个 Rank，10 ms 任务中轮询读取并保存原始 ADC 值；
+- 前 4 路按 12 位 ADC、3.3 V 参考电压换算为 mV；电流和温度暂不猜测传感器模型，`calibrated=0`；
+- 1000 ms 日志同时输出第 1 路换算电压、7 路原始值、故障标志、故障码、锁存状态和过压配置字段；
 - 主循环不使用 `HAL_Delay()` 进行任务调度。
 
 ## TIM2 参数
@@ -27,6 +30,20 @@ Period    = 9
 ```
 
 因此 TIM2 更新中断周期为 1 ms。
+
+## ADC 通道映射
+
+```text
+Rank 1 / PA0 / ADC1_IN0 -> cell_voltage_mv[0]
+Rank 2 / PA1 / ADC1_IN1 -> cell_voltage_mv[1]
+Rank 3 / PA2 / ADC1_IN2 -> cell_voltage_mv[2]
+Rank 4 / PA3 / ADC1_IN3 -> cell_voltage_mv[3]
+Rank 5 / PA4 / ADC1_IN4 -> pack_current_ma（待传感器换算）
+Rank 6 / PA5 / ADC1_IN5 -> temperature_cdeg[0]（待传感器换算）
+Rank 7 / PA6 / ADC1_IN6 -> temperature_cdeg[1]（待传感器换算）
+```
+
+当前 ADC 输入仅作为 0～3.3 V 安全模拟信号演示。`valid=1` 表示 7 路转换帧成功，`calibrated=0` 表示电流和温度的实际传感器传递函数尚未配置。
 
 ## 构建产物
 
@@ -51,4 +68,4 @@ Period    = 9
 
 ## 下一步
 
-下一步实现 ADC 多通道采样接口，把原始 ADC 值转换为 `BmsData`。
+下一步将 ADC 轮询读取替换为 ADC+DMA，并补充实际电流/温度传感器的换算与校准。
