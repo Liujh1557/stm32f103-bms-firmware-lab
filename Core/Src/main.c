@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
+#include "dma.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -39,7 +40,6 @@
 /* USER CODE BEGIN PD */
 #define BMS_ADC_VREF_MV      3300U
 #define BMS_ADC_MAX_COUNTS   4095U
-#define BMS_ADC_POLL_TIMEOUT 2U
 
 /* USER CODE END PD */
 
@@ -57,7 +57,12 @@ uint32_t last_100ms = 0;
 uint32_t last_1000ms = 0;
 uint32_t count_10ms = 0;
 uint32_t count_100ms = 0;
-static uint16_t g_adc_raw[BMS_ADC_CHANNEL_COUNT] = {0};
+static uint16_t g_adc_dma_buffer[BMS_ADC_CHANNEL_COUNT] = {0};
+static volatile uint8_t g_adc_busy = 0U;
+static volatile uint8_t g_adc_frame_ready = 0U;
+static volatile uint8_t g_adc_error_pending = 0U;
+static uint32_t g_adc_frame_count = 0U;
+static uint32_t g_adc_error_count = 0U;
 static BmsData g_bms_data = {0};
 static BmsConfig g_bms_config = {0};
 static BmsFault g_bms_fault = {0};
@@ -70,7 +75,8 @@ static void Task_10ms(void);
 static void Task_100ms(void);
 static void Task_1000ms(void);
 static uint16_t AdcRawToMillivolts(uint16_t raw);
-static uint8_t ReadAdcFrame(void);
+static void ProcessAdcFrame(void);
+static uint8_t StartAdcFrame(void);
 
 /* USER CODE END PFP */
 
@@ -108,6 +114,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM2_Init();
   MX_USART1_UART_Init();
   MX_ADC1_Init();
@@ -194,29 +201,39 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 static void Task_10ms(void)
 {
+  uint8_t adc_can_start = 1U;
+
   count_10ms++;
 
-  if (ReadAdcFrame() != 0U) {
-    uint8_t i;
-
-    for (i = 0U; i < BMS_ADC_CHANNEL_COUNT; i++) {
-      g_bms_data.adc_raw[i] = g_adc_raw[i];
-    }
-
-    for (i = 0U; i < BMS_CELL_COUNT; i++) {
-      g_bms_data.cell_voltage_mv[i] = AdcRawToMillivolts(g_adc_raw[i]);
-    }
-
-    /* Current and temperature transfer functions depend on the actual
-     * sensor/front-end circuit and are intentionally not guessed here. */
-    g_bms_data.pack_current_ma = 0;
-    g_bms_data.temperature_cdeg[0] = 0;
-    g_bms_data.temperature_cdeg[1] = 0;
-    g_bms_data.timestamp_ms = g_system_ms;
-    g_bms_data.valid = 1U;
-    g_bms_data.calibrated = 0U;
-  } else {
+  if (g_adc_error_pending != 0U) {
+    g_adc_error_pending = 0U;
     g_bms_data.valid = 0U;
+
+    if (HAL_ADC_Stop_DMA(&hadc1) != HAL_OK) {
+      g_adc_error_count++;
+      adc_can_start = 0U;
+    }
+  }
+
+  if (g_adc_frame_ready != 0U) {
+    g_adc_frame_ready = 0U;
+    __DMB();
+
+    if (HAL_ADC_Stop_DMA(&hadc1) == HAL_OK) {
+      ProcessAdcFrame();
+      g_adc_frame_count++;
+    } else {
+      g_adc_error_count++;
+      g_bms_data.valid = 0U;
+      adc_can_start = 0U;
+    }
+  }
+
+  if ((g_adc_busy == 0U) && (adc_can_start != 0U)) {
+    if (StartAdcFrame() == 0U) {
+      g_adc_error_count++;
+      g_bms_data.valid = 0U;
+    }
   }
 }
 
@@ -227,19 +244,22 @@ static void Task_100ms(void)
 
 static void Task_1000ms(void)
 {
-  char message[192];
+  char message[224];
   int length;
 
   HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 
   length = snprintf(message,
                     sizeof(message),
-                    "time=%lu ms, 10ms=%lu, 100ms=%lu, valid=%u, cal=%u, cell0=%u mV, raw=%u,%u,%u,%u,%u,%u,%u, fault=0x%08lx, code=%u, latched=%u, cfg_ov=%u\r\n",
+                    "time=%lu ms, 10ms=%lu, 100ms=%lu, valid=%u, sensor_cal=%u, dma_busy=%u, frames=%lu, adc_err=%lu, cell0=%u mV, raw=%u,%u,%u,%u,%u,%u,%u, fault=0x%08lx, cfg_ov=%u\r\n",
                     (unsigned long)g_system_ms,
                     (unsigned long)count_10ms,
                     (unsigned long)count_100ms,
                     (unsigned int)g_bms_data.valid,
-                    (unsigned int)g_bms_data.calibrated,
+                    (unsigned int)g_bms_data.sensor_calibrated,
+                    (unsigned int)g_adc_busy,
+                    (unsigned long)g_adc_frame_count,
+                    (unsigned long)g_adc_error_count,
                     (unsigned int)g_bms_data.cell_voltage_mv[0],
                     (unsigned int)g_bms_data.adc_raw[0],
                     (unsigned int)g_bms_data.adc_raw[1],
@@ -249,13 +269,11 @@ static void Task_1000ms(void)
                     (unsigned int)g_bms_data.adc_raw[5],
                     (unsigned int)g_bms_data.adc_raw[6],
                     (unsigned long)g_bms_fault.flags,
-                    (unsigned int)g_bms_fault.active_code,
-                    (unsigned int)g_bms_fault.latched,
                     (unsigned int)g_bms_config.over_voltage_mv);
 
   if (length > 0) {
     if (length > (int)sizeof(message)) {
-      length = (int)sizeof(message);
+      length = (int)sizeof(message) - 1;
     }
 
     HAL_UART_Transmit(&huart1,
@@ -272,28 +290,58 @@ static uint16_t AdcRawToMillivolts(uint16_t raw)
                     / BMS_ADC_MAX_COUNTS);
 }
 
-static uint8_t ReadAdcFrame(void)
+static void ProcessAdcFrame(void)
 {
   uint8_t i;
 
-  if (HAL_ADC_Start(&hadc1) != HAL_OK) {
-    return 0U;
-  }
-
   for (i = 0U; i < BMS_ADC_CHANNEL_COUNT; i++) {
-    if (HAL_ADC_PollForConversion(&hadc1, BMS_ADC_POLL_TIMEOUT) != HAL_OK) {
-      (void)HAL_ADC_Stop(&hadc1);
-      return 0U;
-    }
-
-    g_adc_raw[i] = (uint16_t)HAL_ADC_GetValue(&hadc1);
+    g_bms_data.adc_raw[i] = g_adc_dma_buffer[i];
   }
 
-  if (HAL_ADC_Stop(&hadc1) != HAL_OK) {
+  for (i = 0U; i < BMS_CELL_COUNT; i++) {
+    g_bms_data.cell_voltage_mv[i] =
+        AdcRawToMillivolts(g_adc_dma_buffer[i]);
+  }
+
+  /* Current and temperature transfer functions depend on the actual
+   * sensor/front-end circuit and are intentionally not guessed here. */
+  g_bms_data.pack_current_ma = 0;
+  g_bms_data.temperature_cdeg[0] = 0;
+  g_bms_data.temperature_cdeg[1] = 0;
+  g_bms_data.timestamp_ms = g_system_ms;
+  g_bms_data.valid = 1U;
+  g_bms_data.sensor_calibrated = 0U;
+}
+
+static uint8_t StartAdcFrame(void)
+{
+  g_adc_busy = 1U;
+
+  if (HAL_ADC_Start_DMA(&hadc1,
+                        (uint32_t *)g_adc_dma_buffer,
+                        BMS_ADC_CHANNEL_COUNT) != HAL_OK) {
+    g_adc_busy = 0U;
     return 0U;
   }
 
   return 1U;
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+  if (hadc->Instance == ADC1) {
+    g_adc_busy = 0U;
+    __DMB();
+    g_adc_frame_ready = 1U;
+  }
+}
+
+void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
+{
+  if (hadc->Instance == ADC1) {
+    g_adc_busy = 0U;
+    g_adc_error_pending = 1U;
+  }
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)

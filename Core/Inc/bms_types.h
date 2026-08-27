@@ -18,7 +18,7 @@ typedef struct
     int16_t temperature_cdeg[BMS_TEMPERATURE_COUNT];
     uint32_t timestamp_ms;
     uint8_t valid;
-    uint8_t calibrated;
+    uint8_t sensor_calibrated;
 } BmsData;
 
 typedef struct
