@@ -103,6 +103,11 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
 
   /* USER CODE BEGIN USART1_MspInit 1 */
 
+    /* USART1 IRQ is required for the final TC event of a normal-mode TX DMA
+     * transfer. The DMA IRQ only means the last byte was moved to USART1. */
+    HAL_NVIC_SetPriority(USART1_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(USART1_IRQn);
+
   /* USER CODE END USART1_MspInit 1 */
   }
 }

@@ -18,6 +18,7 @@
 - 10 ms 任务启动一帧 DMA，DMA 完成中断只设置标志，下一次任务再处理完整采样数组；
 - 采样处理增加 4 点滑动平均，`BmsData` 同时保留最新原始值和滤波值；
 - USART1 使用 DMA1 Channel4 非阻塞发送日志，发送缓冲区为静态数组，并统计发送成功和丢弃次数；
+- 为完成 Normal 模式 DMA 的最后一个字节发送，启用 USART1 TC 中断并在 `USART1_IRQHandler()` 中调用 `HAL_UART_IRQHandler()`；
 - 1000 ms 日志输出 DMA 状态、完成帧数、错误次数、第 1 路换算电压、7 路原始值和故障标志；
 - 主循环不使用 `HAL_Delay()` 进行任务调度。
 
@@ -76,6 +77,21 @@ STM32F1 在多 Rank 扫描模式下，EOC 在扫描序列结束时才有效，�
 - 15 秒测试期间 `frames` 从 99 增长到 1499，保持每秒约 100 帧，`adc_err=0`，说明 10 ms 周期采样和 DMA 完成中断持续运行；
 - PA0 接 GND 后，`raw[0]` 稳定为 0、`cell0=0 mV`，且 56～58 秒测试中 `frames` 从 5599 增长到 5799，`adc_err=0`；
 - 其余未接线的 ADC 通道出现漂移，属于高阻悬空输入，不能作为有效测量数据。
+
+## UART TX DMA 中断修复
+
+第一次使用 USART1 TX DMA 时，硬件只收到第一条日志。原因是 DMA1 Channel4 只报告“最后一个字节已搬到 USART1”，HAL 随后还要等待 USART1 的 TC（Transmission Complete）中断来释放 UART 状态并调用 `HAL_UART_TxCpltCallback()`；当时工程没有 `USART1_IRQHandler()`，也没有在 `.ioc` 中启用 `USART1_IRQn`，所以 `g_uart_tx_busy` 一直为 1，后续日志被丢弃。
+
+当前已补齐：
+
+```text
+led-test.ioc          -> NVIC.USART1_IRQn=true
+usart.c               -> 启用 USART1_IRQn
+stm32f1xx_it.c        -> USART1_IRQHandler()
+                         HAL_UART_IRQHandler(&huart1)
+```
+
+修复版本已经命令行编译通过，尚未烧录。烧录后应看到日志持续输出，且 `tx` 增加、`tx_drop` 不再因发送状态卡住而持续增加。
 
 ## 下一步
 
