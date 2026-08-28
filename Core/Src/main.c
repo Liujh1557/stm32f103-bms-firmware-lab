@@ -58,6 +58,11 @@ uint32_t last_1000ms = 0;
 uint32_t count_10ms = 0;
 uint32_t count_100ms = 0;
 static uint16_t g_adc_dma_buffer[BMS_ADC_CHANNEL_COUNT] = {0};
+static uint16_t g_adc_filter_samples[BMS_ADC_FILTER_LENGTH]
+                                      [BMS_ADC_CHANNEL_COUNT] = {0};
+static uint32_t g_adc_filter_sum[BMS_ADC_CHANNEL_COUNT] = {0};
+static uint8_t g_adc_filter_index = 0U;
+static uint8_t g_adc_filter_count = 0U;
 static volatile uint8_t g_adc_busy = 0U;
 static volatile uint8_t g_adc_frame_ready = 0U;
 static volatile uint8_t g_adc_error_pending = 0U;
@@ -244,14 +249,14 @@ static void Task_100ms(void)
 
 static void Task_1000ms(void)
 {
-  char message[224];
+  char message[256];
   int length;
 
   HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 
   length = snprintf(message,
                     sizeof(message),
-                    "time=%lu ms, 10ms=%lu, 100ms=%lu, valid=%u, sensor_cal=%u, dma_busy=%u, frames=%lu, adc_err=%lu, cell0=%u mV, raw=%u,%u,%u,%u,%u,%u,%u, fault=0x%08lx, cfg_ov=%u\r\n",
+                    "time=%lu ms, 10ms=%lu, 100ms=%lu, valid=%u, sensor_cal=%u, dma_busy=%u, frames=%lu, adc_err=%lu, filter_n=%u, cell0=%u mV, raw=%u,%u,%u,%u,%u,%u,%u, avg=%u,%u,%u,%u,%u,%u,%u, fault=0x%08lx, cfg_ov=%u\r\n",
                     (unsigned long)g_system_ms,
                     (unsigned long)count_10ms,
                     (unsigned long)count_100ms,
@@ -260,6 +265,7 @@ static void Task_1000ms(void)
                     (unsigned int)g_adc_busy,
                     (unsigned long)g_adc_frame_count,
                     (unsigned long)g_adc_error_count,
+                    (unsigned int)g_adc_filter_count,
                     (unsigned int)g_bms_data.cell_voltage_mv[0],
                     (unsigned int)g_bms_data.adc_raw[0],
                     (unsigned int)g_bms_data.adc_raw[1],
@@ -268,6 +274,13 @@ static void Task_1000ms(void)
                     (unsigned int)g_bms_data.adc_raw[4],
                     (unsigned int)g_bms_data.adc_raw[5],
                     (unsigned int)g_bms_data.adc_raw[6],
+                    (unsigned int)g_bms_data.adc_filtered[0],
+                    (unsigned int)g_bms_data.adc_filtered[1],
+                    (unsigned int)g_bms_data.adc_filtered[2],
+                    (unsigned int)g_bms_data.adc_filtered[3],
+                    (unsigned int)g_bms_data.adc_filtered[4],
+                    (unsigned int)g_bms_data.adc_filtered[5],
+                    (unsigned int)g_bms_data.adc_filtered[6],
                     (unsigned long)g_bms_fault.flags,
                     (unsigned int)g_bms_config.over_voltage_mv);
 
@@ -293,14 +306,36 @@ static uint16_t AdcRawToMillivolts(uint16_t raw)
 static void ProcessAdcFrame(void)
 {
   uint8_t i;
+  uint32_t filter_count;
+
+  if (g_adc_filter_count >= BMS_ADC_FILTER_LENGTH) {
+    for (i = 0U; i < BMS_ADC_CHANNEL_COUNT; i++) {
+      g_adc_filter_sum[i] -= g_adc_filter_samples[g_adc_filter_index][i];
+    }
+  } else {
+    g_adc_filter_count++;
+  }
 
   for (i = 0U; i < BMS_ADC_CHANNEL_COUNT; i++) {
     g_bms_data.adc_raw[i] = g_adc_dma_buffer[i];
+    g_adc_filter_samples[g_adc_filter_index][i] = g_adc_dma_buffer[i];
+    g_adc_filter_sum[i] += g_adc_dma_buffer[i];
+  }
+
+  g_adc_filter_index++;
+  if (g_adc_filter_index >= BMS_ADC_FILTER_LENGTH) {
+    g_adc_filter_index = 0U;
+  }
+
+  filter_count = g_adc_filter_count;
+  for (i = 0U; i < BMS_ADC_CHANNEL_COUNT; i++) {
+    g_bms_data.adc_filtered[i] =
+        (uint16_t)(g_adc_filter_sum[i] / filter_count);
   }
 
   for (i = 0U; i < BMS_CELL_COUNT; i++) {
     g_bms_data.cell_voltage_mv[i] =
-        AdcRawToMillivolts(g_adc_dma_buffer[i]);
+        AdcRawToMillivolts(g_bms_data.adc_filtered[i]);
   }
 
   /* Current and temperature transfer functions depend on the actual

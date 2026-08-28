@@ -6,6 +6,7 @@
 #define BMS_CELL_COUNT         4U
 #define BMS_TEMPERATURE_COUNT  2U
 #define BMS_ADC_CHANNEL_COUNT  (BMS_CELL_COUNT + 1U + BMS_TEMPERATURE_COUNT)
+#define BMS_ADC_FILTER_LENGTH  4U
 
 /* All physical values use fixed-point integer units.
  * Voltage: mV, current: mA, temperature: 0.01 degC.
@@ -13,6 +14,7 @@
 typedef struct
 {
     uint16_t adc_raw[BMS_ADC_CHANNEL_COUNT];
+    uint16_t adc_filtered[BMS_ADC_CHANNEL_COUNT];
     uint16_t cell_voltage_mv[BMS_CELL_COUNT];
     int32_t pack_current_ma;
     int16_t temperature_cdeg[BMS_TEMPERATURE_COUNT];
