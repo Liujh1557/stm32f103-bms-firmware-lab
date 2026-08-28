@@ -40,6 +40,7 @@
 /* USER CODE BEGIN PD */
 #define BMS_ADC_VREF_MV      3300U
 #define BMS_ADC_MAX_COUNTS   4095U
+#define UART_LOG_BUFFER_SIZE 256U
 
 /* USER CODE END PD */
 
@@ -68,6 +69,11 @@ static volatile uint8_t g_adc_frame_ready = 0U;
 static volatile uint8_t g_adc_error_pending = 0U;
 static uint32_t g_adc_frame_count = 0U;
 static uint32_t g_adc_error_count = 0U;
+static uint8_t g_uart_log_buffer[UART_LOG_BUFFER_SIZE] = {0};
+static volatile uint8_t g_uart_tx_busy = 0U;
+static volatile uint8_t g_uart_error_pending = 0U;
+static uint32_t g_uart_tx_count = 0U;
+static uint32_t g_uart_tx_drop_count = 0U;
 static BmsData g_bms_data = {0};
 static BmsConfig g_bms_config = {0};
 static BmsFault g_bms_fault = {0};
@@ -82,6 +88,7 @@ static void Task_1000ms(void);
 static uint16_t AdcRawToMillivolts(uint16_t raw);
 static void ProcessAdcFrame(void);
 static uint8_t StartAdcFrame(void);
+static uint8_t StartUartLog(uint16_t length);
 
 /* USER CODE END PFP */
 
@@ -249,14 +256,23 @@ static void Task_100ms(void)
 
 static void Task_1000ms(void)
 {
-  char message[256];
   int length;
 
   HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 
-  length = snprintf(message,
-                    sizeof(message),
-                    "time=%lu ms, 10ms=%lu, 100ms=%lu, valid=%u, sensor_cal=%u, dma_busy=%u, frames=%lu, adc_err=%lu, filter_n=%u, cell0=%u mV, raw=%u,%u,%u,%u,%u,%u,%u, avg=%u,%u,%u,%u,%u,%u,%u, fault=0x%08lx, cfg_ov=%u\r\n",
+  if (g_uart_error_pending != 0U) {
+    g_uart_error_pending = 0U;
+    g_uart_tx_drop_count++;
+  }
+
+  if (g_uart_tx_busy != 0U) {
+    g_uart_tx_drop_count++;
+    return;
+  }
+
+  length = snprintf((char *)g_uart_log_buffer,
+                    sizeof(g_uart_log_buffer),
+                    "time=%lu ms, 10ms=%lu, 100ms=%lu, valid=%u, sensor_cal=%u, dma_busy=%u, frames=%lu, adc_err=%lu, filter_n=%u, cell0=%u mV, raw=%u,%u,%u,%u,%u,%u,%u, avg=%u,%u,%u,%u,%u,%u,%u, fault=0x%08lx, cfg_ov=%u, tx=%lu, tx_drop=%lu\r\n",
                     (unsigned long)g_system_ms,
                     (unsigned long)count_10ms,
                     (unsigned long)count_100ms,
@@ -282,18 +298,35 @@ static void Task_1000ms(void)
                     (unsigned int)g_bms_data.adc_filtered[5],
                     (unsigned int)g_bms_data.adc_filtered[6],
                     (unsigned long)g_bms_fault.flags,
-                    (unsigned int)g_bms_config.over_voltage_mv);
+                    (unsigned int)g_bms_config.over_voltage_mv,
+                    (unsigned long)g_uart_tx_count,
+                    (unsigned long)g_uart_tx_drop_count);
 
   if (length > 0) {
-    if (length > (int)sizeof(message)) {
-      length = (int)sizeof(message) - 1;
+    if (length >= (int)sizeof(g_uart_log_buffer)) {
+      length = (int)sizeof(g_uart_log_buffer) - 1;
     }
 
-    HAL_UART_Transmit(&huart1,
-                      (uint8_t *)message,
-                      (uint16_t)length,
-                      100);
+    if (StartUartLog((uint16_t)length) == 0U) {
+      g_uart_tx_drop_count++;
+    }
   }
+}
+
+static uint8_t StartUartLog(uint16_t length)
+{
+  if ((g_uart_tx_busy != 0U) || (length == 0U)) {
+    return 0U;
+  }
+
+  g_uart_tx_busy = 1U;
+  if (HAL_UART_Transmit_DMA(&huart1, g_uart_log_buffer, length) != HAL_OK) {
+    g_uart_tx_busy = 0U;
+    return 0U;
+  }
+
+  g_uart_tx_count++;
+  return 1U;
 }
 
 static uint16_t AdcRawToMillivolts(uint16_t raw)
@@ -376,6 +409,21 @@ void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
   if (hadc->Instance == ADC1) {
     g_adc_busy = 0U;
     g_adc_error_pending = 1U;
+  }
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART1) {
+    g_uart_tx_busy = 0U;
+  }
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART1) {
+    g_uart_tx_busy = 0U;
+    g_uart_error_pending = 1U;
   }
 }
 
