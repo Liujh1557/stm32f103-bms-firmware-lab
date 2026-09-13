@@ -25,8 +25,10 @@ typedef struct
 
 typedef struct
 {
+    uint8_t monitored_cell_count;
     uint16_t over_voltage_mv;
     uint16_t under_voltage_mv;
+    uint16_t voltage_hysteresis_mv;
     int32_t over_current_ma;
     int16_t over_temperature_cdeg;
     int16_t under_temperature_cdeg;

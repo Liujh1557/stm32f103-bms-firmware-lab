@@ -26,6 +26,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "bms_protection.h"
 #include "bms_types.h"
 #include <stdio.h>
 
@@ -77,6 +78,7 @@ static uint32_t g_uart_tx_drop_count = 0U;
 static BmsData g_bms_data = {0};
 static BmsConfig g_bms_config = {0};
 static BmsFault g_bms_fault = {0};
+static BmsProtection g_bms_protection = {0};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -138,6 +140,16 @@ int main(void)
   if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK) {
     Error_Handler();
   }
+
+  /* Teaching thresholds for a safe 0-3.3 V virtual cell input on PA0.
+   * These values are not real lithium-cell protection parameters. */
+  g_bms_config.monitored_cell_count = 1U;
+  g_bms_config.over_voltage_mv = 3000U;
+  g_bms_config.under_voltage_mv = 300U;
+  g_bms_config.voltage_hysteresis_mv = 100U;
+  g_bms_config.fault_confirm_ms = 300U;
+  g_bms_config.recovery_ms = 500U;
+  BmsProtection_Init(&g_bms_protection, &g_bms_fault);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -252,6 +264,11 @@ static void Task_10ms(void)
 static void Task_100ms(void)
 {
   count_100ms++;
+  BmsProtection_Update(&g_bms_protection,
+                       &g_bms_data,
+                       &g_bms_config,
+                       &g_bms_fault,
+                       100U);
 }
 
 static void Task_1000ms(void)
@@ -272,7 +289,7 @@ static void Task_1000ms(void)
 
   length = snprintf((char *)g_uart_log_buffer,
                     sizeof(g_uart_log_buffer),
-                    "time=%lu ms, 10ms=%lu, 100ms=%lu, valid=%u, sensor_cal=%u, dma_busy=%u, frames=%lu, adc_err=%lu, filter_n=%u, cell0=%u mV, raw=%u,%u,%u,%u,%u,%u,%u, avg=%u,%u,%u,%u,%u,%u,%u, fault=0x%08lx, cfg_ov=%u, tx=%lu, tx_drop=%lu\r\n",
+                    "t=%lu, n10=%lu, n100=%lu, valid=%u, cal=%u, adc_busy=%u, frames=%lu, adc_err=%lu, fn=%u, cell0=%u, raw=%u,%u,%u,%u,%u,%u,%u, avg=%u,%u,%u,%u,%u,%u,%u, fault=0x%08lx, code=%u, latch=%u, pstate=%u, tx=%lu, drop=%lu\r\n",
                     (unsigned long)g_system_ms,
                     (unsigned long)count_10ms,
                     (unsigned long)count_100ms,
@@ -298,7 +315,9 @@ static void Task_1000ms(void)
                     (unsigned int)g_bms_data.adc_filtered[5],
                     (unsigned int)g_bms_data.adc_filtered[6],
                     (unsigned long)g_bms_fault.flags,
-                    (unsigned int)g_bms_config.over_voltage_mv,
+                    (unsigned int)g_bms_fault.active_code,
+                    (unsigned int)g_bms_fault.latched,
+                    (unsigned int)g_bms_protection.state,
                     (unsigned long)g_uart_tx_count,
                     (unsigned long)g_uart_tx_drop_count);
 
