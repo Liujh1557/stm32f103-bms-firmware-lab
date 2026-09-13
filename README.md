@@ -99,7 +99,7 @@ stm32f1xx_it.c        -> USART1_IRQHandler()
 
 修复版本已经命令行编译并烧录验证。串口日志持续输出，`tx` 正常递增且 `tx_drop=0`，说明 DMA 完成中断、USART TC 中断和发送完成回调链路均已闭环。
 
-## UART RX DMA（待硬件验证）
+## UART RX DMA
 
 USART1 RX DMA 使用 64 字节静态缓冲区和 Normal 模式。接收链路为：
 
@@ -114,7 +114,11 @@ PA10 / USART1_RX
         -> USART1 TX DMA 返回 ACK PING
 ```
 
-半传输中断被关闭，因为 32 字节的 HT 事件并不代表一帧结束。若上一帧尚未处理，新帧会被丢弃并计入 `rx_drop`；UART/DMA 错误计入 `uart_err`。该版本已经命令行编译通过，`text/data/bss` 为 `15952/92/2940`，但尚未完成板端收发验证。
+半传输中断被关闭，因为 32 字节的 HT 事件并不代表一帧结束。若上一帧尚未处理，新帧会被丢弃并计入 `rx_drop`；UART/DMA 错误计入 `uart_err`。该版本命令行编译通过，`text/data/bss` 为 `15952/92/2940`。
+
+板端实测以 UTF-8/ASCII 发送 `PING\n` 后收到 `ACK PING`，下一条周期日志中 `rx` 从 0 增长为 1，`rx_drop=0`、`uart_err=0`。同一秒内 `tx` 从 337 增长为 339，其中一次发送为应答、一次为周期日志，符合设计。
+
+此次测试期间 `frames` 从 33799 增长为 33899，10 ms ADC DMA 采样未受串口双向通信影响。PA0 保持接 GND，日志同时出现 `fault=0x00000002`、`code=2`、`latch=1`、`pstate=2`，因此单路欠压确认路径也已完成硬件验证；过压和恢复路径仍未完成板端验证。
 
 ## 电压保护状态机（待硬件验证）
 
@@ -135,4 +139,4 @@ NORMAL -> CONFIRMING -> FAULT_ACTIVE -> RECOVERING -> NORMAL
 
 ## 下一步
 
-下一步烧录 UART RX DMA 版本，在串口助手中发送 ASCII 文本 `PING`（可带 CR/LF），确认收到 `ACK PING`，并观察周期日志中的 `rx` 增加、`rx_drop=0`、`uart_err=0`。完成接收链路后再增加帧格式和 CRC，随后进入 SPI2 回环实验。
+下一步为 UART 命令增加明确的帧格式和 CRC 校验；完成后进入 SPI2 回环实验。过压与恢复路径保留为后续保护模块的硬件测试项。
