@@ -29,6 +29,7 @@
 #include "bms_protection.h"
 #include "bms_types.h"
 #include <stdio.h>
+#include <string.h>
 
 /* USER CODE END Includes */
 
@@ -42,6 +43,7 @@
 #define BMS_ADC_VREF_MV      3300U
 #define BMS_ADC_MAX_COUNTS   4095U
 #define UART_LOG_BUFFER_SIZE 256U
+#define UART_RX_BUFFER_SIZE  64U
 
 /* USER CODE END PD */
 
@@ -72,9 +74,16 @@ static uint32_t g_adc_frame_count = 0U;
 static uint32_t g_adc_error_count = 0U;
 static uint8_t g_uart_log_buffer[UART_LOG_BUFFER_SIZE] = {0};
 static volatile uint8_t g_uart_tx_busy = 0U;
-static volatile uint8_t g_uart_error_pending = 0U;
 static uint32_t g_uart_tx_count = 0U;
 static uint32_t g_uart_tx_drop_count = 0U;
+static uint8_t g_uart_rx_dma_buffer[UART_RX_BUFFER_SIZE] = {0};
+static uint8_t g_uart_rx_frame[UART_RX_BUFFER_SIZE] = {0};
+static volatile uint16_t g_uart_rx_length = 0U;
+static volatile uint8_t g_uart_rx_frame_ready = 0U;
+static volatile uint8_t g_uart_rx_restart_pending = 0U;
+static uint32_t g_uart_rx_count = 0U;
+static volatile uint32_t g_uart_rx_drop_count = 0U;
+static volatile uint32_t g_uart_error_count = 0U;
 static BmsData g_bms_data = {0};
 static BmsConfig g_bms_config = {0};
 static BmsFault g_bms_fault = {0};
@@ -91,6 +100,8 @@ static uint16_t AdcRawToMillivolts(uint16_t raw);
 static void ProcessAdcFrame(void);
 static uint8_t StartAdcFrame(void);
 static uint8_t StartUartLog(uint16_t length);
+static uint8_t StartUartRx(void);
+static void ProcessUartRx(void);
 
 /* USER CODE END PFP */
 
@@ -150,6 +161,10 @@ int main(void)
   g_bms_config.fault_confirm_ms = 300U;
   g_bms_config.recovery_ms = 500U;
   BmsProtection_Init(&g_bms_protection, &g_bms_fault);
+
+  if (StartUartRx() == 0U) {
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -229,6 +244,14 @@ static void Task_10ms(void)
 
   count_10ms++;
 
+  if (g_uart_rx_restart_pending != 0U) {
+    if (StartUartRx() != 0U) {
+      g_uart_rx_restart_pending = 0U;
+    }
+  }
+
+  ProcessUartRx();
+
   if (g_adc_error_pending != 0U) {
     g_adc_error_pending = 0U;
     g_bms_data.valid = 0U;
@@ -277,11 +300,6 @@ static void Task_1000ms(void)
 
   HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 
-  if (g_uart_error_pending != 0U) {
-    g_uart_error_pending = 0U;
-    g_uart_tx_drop_count++;
-  }
-
   if (g_uart_tx_busy != 0U) {
     g_uart_tx_drop_count++;
     return;
@@ -289,7 +307,7 @@ static void Task_1000ms(void)
 
   length = snprintf((char *)g_uart_log_buffer,
                     sizeof(g_uart_log_buffer),
-                    "t=%lu, n10=%lu, n100=%lu, valid=%u, cal=%u, adc_busy=%u, frames=%lu, adc_err=%lu, fn=%u, cell0=%u, raw=%u,%u,%u,%u,%u,%u,%u, avg=%u,%u,%u,%u,%u,%u,%u, fault=0x%08lx, code=%u, latch=%u, pstate=%u, tx=%lu, drop=%lu\r\n",
+                    "t=%lu,n10=%lu,n100=%lu,valid=%u,cal=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw=%u,%u,%u,%u,%u,%u,%u,avg=%u,%u,%u,%u,%u,%u,%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu\r\n",
                     (unsigned long)g_system_ms,
                     (unsigned long)count_10ms,
                     (unsigned long)count_100ms,
@@ -319,7 +337,10 @@ static void Task_1000ms(void)
                     (unsigned int)g_bms_fault.latched,
                     (unsigned int)g_bms_protection.state,
                     (unsigned long)g_uart_tx_count,
-                    (unsigned long)g_uart_tx_drop_count);
+                    (unsigned long)g_uart_tx_drop_count,
+                    (unsigned long)g_uart_rx_count,
+                    (unsigned long)g_uart_rx_drop_count,
+                    (unsigned long)g_uart_error_count);
 
   if (length > 0) {
     if (length >= (int)sizeof(g_uart_log_buffer)) {
@@ -346,6 +367,55 @@ static uint8_t StartUartLog(uint16_t length)
 
   g_uart_tx_count++;
   return 1U;
+}
+
+static uint8_t StartUartRx(void)
+{
+  if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1,
+                                   g_uart_rx_dma_buffer,
+                                   UART_RX_BUFFER_SIZE) != HAL_OK) {
+    return 0U;
+  }
+
+  /* A half-transfer event does not end a frame in Normal DMA mode. */
+  __HAL_DMA_DISABLE_IT(huart1.hdmarx, DMA_IT_HT);
+  return 1U;
+}
+
+static void ProcessUartRx(void)
+{
+  uint16_t length;
+  int response_length;
+
+  if ((g_uart_rx_frame_ready == 0U) || (g_uart_tx_busy != 0U)) {
+    return;
+  }
+
+  __DMB();
+  length = g_uart_rx_length;
+  while ((length > 0U)
+         && ((g_uart_rx_frame[length - 1U] == '\r')
+             || (g_uart_rx_frame[length - 1U] == '\n'))) {
+    length--;
+  }
+
+  if ((length == 4U) && (memcmp(g_uart_rx_frame, "PING", 4U) == 0)) {
+    response_length = snprintf((char *)g_uart_log_buffer,
+                               sizeof(g_uart_log_buffer),
+                               "ACK PING\r\n");
+  } else {
+    response_length = snprintf((char *)g_uart_log_buffer,
+                               sizeof(g_uart_log_buffer),
+                               "ERR CMD len=%u\r\n",
+                               (unsigned int)length);
+  }
+
+  if ((response_length > 0)
+      && (response_length < (int)sizeof(g_uart_log_buffer))
+      && (StartUartLog((uint16_t)response_length) != 0U)) {
+    g_uart_rx_count++;
+    g_uart_rx_frame_ready = 0U;
+  }
 }
 
 static uint16_t AdcRawToMillivolts(uint16_t raw)
@@ -438,11 +508,37 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   }
 }
 
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
+{
+  if (huart->Instance == USART1) {
+    if ((size > 0U) && (size <= UART_RX_BUFFER_SIZE)) {
+      if (g_uart_rx_frame_ready == 0U) {
+        memcpy(g_uart_rx_frame, g_uart_rx_dma_buffer, size);
+        g_uart_rx_length = size;
+        __DMB();
+        g_uart_rx_frame_ready = 1U;
+      } else {
+        g_uart_rx_drop_count++;
+      }
+    }
+
+    if (StartUartRx() == 0U) {
+      g_uart_rx_restart_pending = 1U;
+    }
+  }
+}
+
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1) {
-    g_uart_tx_busy = 0U;
-    g_uart_error_pending = 1U;
+    g_uart_error_count++;
+
+    if (huart->gState == HAL_UART_STATE_READY) {
+      g_uart_tx_busy = 0U;
+    }
+    if (huart->RxState == HAL_UART_STATE_READY) {
+      g_uart_rx_restart_pending = 1U;
+    }
   }
 }
 

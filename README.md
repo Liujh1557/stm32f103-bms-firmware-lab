@@ -19,6 +19,9 @@
 - 采样处理增加 4 点滑动平均，`BmsData` 同时保留最新原始值和滤波值；
 - USART1 使用 DMA1 Channel4 非阻塞发送日志，发送缓冲区为静态数组，并统计发送成功和丢弃次数；
 - 为完成 Normal 模式 DMA 的最后一个字节发送，启用 USART1 TC 中断并在 `USART1_IRQHandler()` 中调用 `HAL_UART_IRQHandler()`；
+- USART1 RX 使用 DMA1 Channel5 和 `HAL_UARTEx_ReceiveToIdle_DMA()` 接收不定长数据；
+- RX 空闲事件回调只复制一帧、记录长度并重启 DMA，命令解析放在 10 ms 主任务中；
+- 第一条测试命令为 `PING`，识别成功后通过 TX DMA 返回 `ACK PING`；
 - 增加独立 `bms_protection` 模块，100 ms 周期执行电压保护状态机；
 - 第一版只监控 PA0 对应的第 1 路，使用 0～3.3 V 安全模拟输入和教学阈值；
 - 1000 ms 日志输出 DMA 状态、完成帧数、错误次数、第 1 路换算电压、7 路原始值和故障标志；
@@ -96,6 +99,23 @@ stm32f1xx_it.c        -> USART1_IRQHandler()
 
 修复版本已经命令行编译并烧录验证。串口日志持续输出，`tx` 正常递增且 `tx_drop=0`，说明 DMA 完成中断、USART TC 中断和发送完成回调链路均已闭环。
 
+## UART RX DMA（待硬件验证）
+
+USART1 RX DMA 使用 64 字节静态缓冲区和 Normal 模式。接收链路为：
+
+```text
+PA10 / USART1_RX
+        -> DMA1 Channel5
+        -> 64 字节 DMA 缓冲区
+        -> USART1 IDLE 或 DMA TC 事件
+        -> HAL_UARTEx_RxEventCallback()
+        -> 复制到稳定帧缓冲区并立即重启 RX DMA
+        -> 10 ms 主任务解析 PING
+        -> USART1 TX DMA 返回 ACK PING
+```
+
+半传输中断被关闭，因为 32 字节的 HT 事件并不代表一帧结束。若上一帧尚未处理，新帧会被丢弃并计入 `rx_drop`；UART/DMA 错误计入 `uart_err`。该版本已经命令行编译通过，`text/data/bss` 为 `15952/92/2940`，但尚未完成板端收发验证。
+
 ## 电压保护状态机（待硬件验证）
 
 第一版保护逻辑在 100 ms 任务中运行，只监控 PA0 对应的 `cell_voltage_mv[0]`：
@@ -115,4 +135,4 @@ NORMAL -> CONFIRMING -> FAULT_ACTIVE -> RECOVERING -> NORMAL
 
 ## 下一步
 
-下一步烧录保护状态机版本，用 PA0 接 GND 验证欠压确认；再用 PA0 接 3.3 V 验证过压确认。由于目前缺少中间电压源，恢复路径先通过软件故障注入验证，不能宣称已完成硬件验证。
+下一步烧录 UART RX DMA 版本，在串口助手中发送 ASCII 文本 `PING`（可带 CR/LF），确认收到 `ACK PING`，并观察周期日志中的 `rx` 增加、`rx_drop=0`、`uart_err=0`。完成接收链路后再增加帧格式和 CRC，随后进入 SPI2 回环实验。
