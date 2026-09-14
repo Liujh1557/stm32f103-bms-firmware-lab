@@ -24,7 +24,7 @@
 - USART1 命令采用带帧头、长度和 CRC16-Modbus 的二进制帧，`CMD=0x01` 为 PING；
 - 增加独立 `bms_protection` 模块，100 ms 周期执行电压保护状态机；
 - 第一版只监控 PA0 对应的第 1 路，使用 0～3.3 V 安全模拟输入和教学阈值；
-- 1000 ms 日志输出 DMA 状态、完成帧数、错误次数、第 1 路换算电压、7 路原始值和故障标志；
+- 1000 ms 日志输出 DMA 状态、完成帧数、错误计数、第 1 路原始值/滤波值/换算电压和故障状态；
 - 主循环不使用 `HAL_Delay()` 进行任务调度。
 
 ## TIM2 参数
@@ -137,7 +137,7 @@ NORMAL -> CONFIRMING -> FAULT_ACTIVE -> RECOVERING -> NORMAL
 这些是适配开发板 0～3.3 V 输入的教学参数，不是真实锂电池保护阈值。故障恢复后 `flags` 和 `active_code` 清除，`latched` 保留为 1，表示本次上电期间曾发生过故障。
 当采样数据 `valid=0` 时，保护状态保持不变，不把无效数据误判为故障恢复。`Tests/test_bms_protection.c` 提供主机端状态机测试，覆盖毛刺抑制、欠压/过压确认、回差、恢复、锁存和无效数据保持。
 
-## UART 二进制帧与 CRC（待硬件验证）
+## UART 二进制帧与 CRC
 
 UART 命令现采用二进制帧 `AA 55 | LEN | CMD | PAYLOAD | CRC_LO CRC_H`。`LEN` 表示 `CMD + PAYLOAD` 的字节数，CRC16-Modbus 覆盖 `LEN + CMD + PAYLOAD`。PING 命令的完整测试帧为 `AA 55 01 01 C1 E0`，需要在串口助手中使用十六进制发送且不附加换行；有效帧返回 `ACK PING CRC=OK`，错误 CRC 返回 `ERR CRC`。
 
@@ -145,6 +145,14 @@ UART 命令现采用二进制帧 `AA 55 | LEN | CMD | PAYLOAD | CRC_LO CRC_H`。
 
 纯 C 解析器位于 `Core/Src/uart_protocol.c`，主机端测试覆盖正确 PING、错误帧头、错误长度和错误 CRC。测试已经通过，固件交叉编译也已通过，`text/data/bss` 为 `16068/92/2948`。
 
+板端测试结果：
+
+- `AA 55 01 01 C1 E0` 返回 `ACK PING CRC=OK`；
+- 修改 CRC 的 `AA 55 01 01 C0 E0` 返回 `ERR CRC`；
+- 修改帧头的 `AB 55 01 01 C1 E0` 返回 `ERR FRAME code=1`；
+- 测试日志显示 `rx=5`、`rx_drop=0`、`uart_err=0`、`crc_err=1`、`proto_err=3`。多出的协议错误来自测试期间发送过的旧文本或不完整帧，不代表 DMA 丢帧；
+- `tx_drop=1` 表示协议应答占用单一 TX 缓冲区时跳过了一条低优先级周期日志，协议应答本身没有丢失。
+
 ## 下一步
 
-下一步烧录并验证正确 PING 帧、错误 CRC 帧和协议错误计数；完成后进入 SPI2 回环实验。过压与恢复路径保留为后续保护模块的硬件测试项。
+下一步进入 SPI2 主机全双工回环实验。UART 后续改进项是发送队列、流式拆包/粘包处理和二进制响应帧；过压与恢复路径保留为保护模块的后续硬件测试项。
