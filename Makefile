@@ -39,6 +39,7 @@ C_SOURCES =  \
 Core/Src/main.c \
 Core/Src/bms_protection.c \
 Core/Src/uart_protocol.c \
+Core/Src/spi_if.c \
 Core/Src/gpio.c \
 Core/Src/tim.c \
 Core/Src/usart.c \

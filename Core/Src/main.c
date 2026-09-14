@@ -29,6 +29,7 @@
 /* USER CODE BEGIN Includes */
 #include "bms_protection.h"
 #include "bms_types.h"
+#include "spi_if.h"
 #include "uart_protocol.h"
 #include <stdio.h>
 #include <string.h>
@@ -94,9 +95,6 @@ static const uint8_t g_spi_tx_buffer[SPI_LOOPBACK_SIZE] = {
 };
 static uint8_t g_spi_rx_buffer[SPI_LOOPBACK_SIZE] = {0};
 static uint8_t g_spi_last_rx_buffer[SPI_LOOPBACK_SIZE] = {0};
-static volatile uint8_t g_spi_busy = 0U;
-static volatile uint8_t g_spi_frame_ready = 0U;
-static volatile uint8_t g_spi_error_pending = 0U;
 static uint8_t g_spi_last_ok = 0U;
 static uint32_t g_spi_transfer_count = 0U;
 static uint32_t g_spi_mismatch_count = 0U;
@@ -181,6 +179,7 @@ int main(void)
   g_bms_config.fault_confirm_ms = 300U;
   g_bms_config.recovery_ms = 500U;
   BmsProtection_Init(&g_bms_protection, &g_bms_fault);
+  SpiIf_Init(&hspi1);
 
   if (StartUartRx() == 0U) {
     Error_Handler();
@@ -357,7 +356,7 @@ static void Task_1000ms(void)
                     (unsigned long)g_uart_error_count,
                     (unsigned long)g_uart_crc_error_count,
                     (unsigned long)g_uart_protocol_error_count,
-                    (unsigned int)g_spi_busy,
+                    (unsigned int)SpiIf_IsBusy(),
                     (unsigned int)g_spi_last_ok,
                     (unsigned long)g_spi_transfer_count,
                     (unsigned long)g_spi_mismatch_count,
@@ -396,38 +395,22 @@ static uint8_t StartUartLog(uint16_t length)
 
 static uint8_t StartSpiLoopbackDma(void)
 {
-  if (g_spi_busy != 0U) {
-    return 0U;
-  }
-
-  memset(g_spi_rx_buffer, 0, sizeof(g_spi_rx_buffer));
-  g_spi_busy = 1U;
-
-  if (HAL_SPI_TransmitReceive_DMA(&hspi1,
-                                  (uint8_t *)g_spi_tx_buffer,
-                                  g_spi_rx_buffer,
-                                  SPI_LOOPBACK_SIZE) != HAL_OK) {
-    g_spi_busy = 0U;
-    return 0U;
-  }
-
-  return 1U;
+  return SpiIf_StartTransfer((uint8_t *)g_spi_tx_buffer,
+                             g_spi_rx_buffer,
+                             SPI_LOOPBACK_SIZE);
 }
 
 static void ProcessSpiLoopbackResult(void)
 {
-  if (g_spi_error_pending != 0U) {
-    g_spi_error_pending = 0U;
+  if (SpiIf_TakeError() != 0U) {
     g_spi_last_ok = 0U;
     g_spi_error_count++;
   }
 
-  if (g_spi_frame_ready == 0U) {
+  if (SpiIf_TakeComplete() == 0U) {
     return;
   }
 
-  g_spi_frame_ready = 0U;
-  __DMB();
   g_spi_transfer_count++;
   memcpy(g_spi_last_rx_buffer,
          g_spi_rx_buffer,
@@ -624,23 +607,6 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     if (huart->RxState == HAL_UART_STATE_READY) {
       g_uart_rx_restart_pending = 1U;
     }
-  }
-}
-
-void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
-{
-  if (hspi->Instance == SPI1) {
-    g_spi_busy = 0U;
-    __DMB();
-    g_spi_frame_ready = 1U;
-  }
-}
-
-void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
-{
-  if (hspi->Instance == SPI1) {
-    g_spi_busy = 0U;
-    g_spi_error_pending = 1U;
   }
 }
 
