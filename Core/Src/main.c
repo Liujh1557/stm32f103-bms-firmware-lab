@@ -93,6 +93,7 @@ static const uint8_t g_spi_tx_buffer[SPI_LOOPBACK_SIZE] = {
   0x12U, 0x34U, 0xA5U, 0x5AU
 };
 static uint8_t g_spi_rx_buffer[SPI_LOOPBACK_SIZE] = {0};
+static uint8_t g_spi_last_rx_buffer[SPI_LOOPBACK_SIZE] = {0};
 static volatile uint8_t g_spi_busy = 0U;
 static volatile uint8_t g_spi_frame_ready = 0U;
 static volatile uint8_t g_spi_error_pending = 0U;
@@ -361,10 +362,10 @@ static void Task_1000ms(void)
                     (unsigned long)g_spi_transfer_count,
                     (unsigned long)g_spi_mismatch_count,
                     (unsigned long)g_spi_error_count,
-                    (unsigned int)g_spi_rx_buffer[0],
-                    (unsigned int)g_spi_rx_buffer[1],
-                    (unsigned int)g_spi_rx_buffer[2],
-                    (unsigned int)g_spi_rx_buffer[3]);
+                    (unsigned int)g_spi_last_rx_buffer[0],
+                    (unsigned int)g_spi_last_rx_buffer[1],
+                    (unsigned int)g_spi_last_rx_buffer[2],
+                    (unsigned int)g_spi_last_rx_buffer[3]);
 
   if (length > 0) {
     if (length >= (int)sizeof(g_uart_log_buffer)) {
@@ -428,9 +429,12 @@ static void ProcessSpiLoopbackResult(void)
   g_spi_frame_ready = 0U;
   __DMB();
   g_spi_transfer_count++;
+  memcpy(g_spi_last_rx_buffer,
+         g_spi_rx_buffer,
+         SPI_LOOPBACK_SIZE);
 
   if (memcmp(g_spi_tx_buffer,
-             g_spi_rx_buffer,
+             g_spi_last_rx_buffer,
              SPI_LOOPBACK_SIZE) != 0) {
     g_spi_last_ok = 0U;
     g_spi_mismatch_count++;

@@ -183,4 +183,6 @@ SPI1_TX -> DMA1 Channel3
 
 PB5/MOSI与PB4/MISO直连。程序启动时发起第一帧，之后每秒调用 `HAL_SPI_TransmitReceive_DMA()`。启动函数立即返回；`HAL_SPI_TxRxCpltCallback()`只清除忙标志并设置完成标志；10 ms主任务再比较收发缓冲区。日志中的 `spi_n`表示已经完成并由主任务处理的DMA帧数，`spi_busy`表示打印瞬间DMA是否仍在传输。
 
+首次板端日志出现 `spi_busy=1`、`spi_ok=1`、`spi_n=1`，但 `spi_rx=00000000`。原因不是回环失败，而是新一帧启动时DMA活动缓冲区被清零，日志同时混用了“上一帧状态”和“下一帧活动缓冲区”。当前已增加 `g_spi_last_rx_buffer`：主任务仅在DMA完成后复制稳定快照，比较和日志均读取该快照，DMA缓冲区不再被日志直接访问。
+
 下一步烧录并验证SPI1 DMA回环；通过后整理阻塞与DMA的差异，再将SPI访问封装为设备接口层。UART后续改进项是发送队列、流式拆包/粘包处理和二进制响应帧。
