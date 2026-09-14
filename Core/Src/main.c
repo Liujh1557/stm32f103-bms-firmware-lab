@@ -20,6 +20,7 @@
 #include "main.h"
 #include "adc.h"
 #include "dma.h"
+#include "spi.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -43,8 +44,9 @@
 /* USER CODE BEGIN PD */
 #define BMS_ADC_VREF_MV      3300U
 #define BMS_ADC_MAX_COUNTS   4095U
-#define UART_LOG_BUFFER_SIZE 256U
+#define UART_LOG_BUFFER_SIZE 320U
 #define UART_RX_BUFFER_SIZE  64U
+#define SPI_LOOPBACK_SIZE     4U
 
 /* USER CODE END PD */
 
@@ -87,6 +89,14 @@ static volatile uint32_t g_uart_rx_drop_count = 0U;
 static volatile uint32_t g_uart_error_count = 0U;
 static uint32_t g_uart_crc_error_count = 0U;
 static uint32_t g_uart_protocol_error_count = 0U;
+static const uint8_t g_spi_tx_buffer[SPI_LOOPBACK_SIZE] = {
+  0x12U, 0x34U, 0xA5U, 0x5AU
+};
+static uint8_t g_spi_rx_buffer[SPI_LOOPBACK_SIZE] = {0};
+static uint8_t g_spi_last_ok = 0U;
+static uint32_t g_spi_transfer_count = 0U;
+static uint32_t g_spi_mismatch_count = 0U;
+static uint32_t g_spi_error_count = 0U;
 static BmsData g_bms_data = {0};
 static BmsConfig g_bms_config = {0};
 static BmsFault g_bms_fault = {0};
@@ -105,6 +115,7 @@ static uint8_t StartAdcFrame(void);
 static uint8_t StartUartLog(uint16_t length);
 static uint8_t StartUartRx(void);
 static void ProcessUartRx(void);
+static void RunSpiLoopbackTest(void);
 
 /* USER CODE END PFP */
 
@@ -146,6 +157,7 @@ int main(void)
   MX_TIM2_Init();
   MX_USART1_UART_Init();
   MX_ADC1_Init();
+  MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK) {
     Error_Handler();
@@ -302,6 +314,7 @@ static void Task_1000ms(void)
   int length;
 
   HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+  RunSpiLoopbackTest();
 
   if (g_uart_tx_busy != 0U) {
     g_uart_tx_drop_count++;
@@ -310,10 +323,8 @@ static void Task_1000ms(void)
 
   length = snprintf((char *)g_uart_log_buffer,
                     sizeof(g_uart_log_buffer),
-                    "t=%lu,n10=%lu,n100=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu\r\n",
+                    "t=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu,spi_ok=%u,spi_n=%lu,spi_mis=%lu,spi_err=%lu,spi_rx=%02X%02X%02X%02X\r\n",
                     (unsigned long)g_system_ms,
-                    (unsigned long)count_10ms,
-                    (unsigned long)count_100ms,
                     (unsigned int)g_bms_data.valid,
                     (unsigned int)g_adc_busy,
                     (unsigned long)g_adc_frame_count,
@@ -332,7 +343,15 @@ static void Task_1000ms(void)
                     (unsigned long)g_uart_rx_drop_count,
                     (unsigned long)g_uart_error_count,
                     (unsigned long)g_uart_crc_error_count,
-                    (unsigned long)g_uart_protocol_error_count);
+                    (unsigned long)g_uart_protocol_error_count,
+                    (unsigned int)g_spi_last_ok,
+                    (unsigned long)g_spi_transfer_count,
+                    (unsigned long)g_spi_mismatch_count,
+                    (unsigned long)g_spi_error_count,
+                    (unsigned int)g_spi_rx_buffer[0],
+                    (unsigned int)g_spi_rx_buffer[1],
+                    (unsigned int)g_spi_rx_buffer[2],
+                    (unsigned int)g_spi_rx_buffer[3]);
 
   if (length > 0) {
     if (length >= (int)sizeof(g_uart_log_buffer)) {
@@ -359,6 +378,32 @@ static uint8_t StartUartLog(uint16_t length)
 
   g_uart_tx_count++;
   return 1U;
+}
+
+static void RunSpiLoopbackTest(void)
+{
+  g_spi_transfer_count++;
+  memset(g_spi_rx_buffer, 0, sizeof(g_spi_rx_buffer));
+
+  if (HAL_SPI_TransmitReceive(&hspi2,
+                              (uint8_t *)g_spi_tx_buffer,
+                              g_spi_rx_buffer,
+                              SPI_LOOPBACK_SIZE,
+                              10U) != HAL_OK) {
+    g_spi_last_ok = 0U;
+    g_spi_error_count++;
+    return;
+  }
+
+  if (memcmp(g_spi_tx_buffer,
+             g_spi_rx_buffer,
+             SPI_LOOPBACK_SIZE) != 0) {
+    g_spi_last_ok = 0U;
+    g_spi_mismatch_count++;
+    return;
+  }
+
+  g_spi_last_ok = 1U;
 }
 
 static uint8_t StartUartRx(void)
