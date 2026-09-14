@@ -22,7 +22,7 @@
 - USART1 RX 使用 DMA1 Channel5 和 `HAL_UARTEx_ReceiveToIdle_DMA()` 接收不定长数据；
 - RX 空闲事件回调只复制一帧、记录长度并重启 DMA，命令解析放在 10 ms 主任务中；
 - USART1 命令采用带帧头、长度和 CRC16-Modbus 的二进制帧，`CMD=0x01` 为 PING；
-- SPI2 配置为500 kHz、模式0、8位MSB优先的软件NSS主机，并使用 PB15/MOSI 到 PB14/MISO 的回环接线；
+- SPI2阻塞回环已完成历史验证；当前使用重映射SPI1和DMA1 Channel2/3，避免与USART1 DMA Channel4/5冲突；
 - 增加独立 `bms_protection` 模块，100 ms 周期执行电压保护状态机；
 - 第一版只监控 PA0 对应的第 1 路，使用 0～3.3 V 安全模拟输入和教学阈值；
 - 1000 ms 日志输出 DMA 状态、完成帧数、错误计数、第 1 路原始值/滤波值/换算电压和故障状态；
@@ -154,7 +154,7 @@ UART 命令现采用二进制帧 `AA 55 | LEN | CMD | PAYLOAD | CRC_LO CRC_H`。
 - 测试日志显示 `rx=5`、`rx_drop=0`、`uart_err=0`、`crc_err=1`、`proto_err=3`。多出的协议错误来自测试期间发送过的旧文本或不完整帧，不代表 DMA 丢帧；
 - `tx_drop=1` 表示协议应答占用单一 TX 缓冲区时跳过了一条低优先级周期日志，协议应答本身没有丢失。
 
-## 下一步
+## SPI2阻塞式回环
 
 SPI2 第一版使用阻塞式 `HAL_SPI_TransmitReceive()`，每秒发送 `12 34 A5 5A` 并接收4字节。周期日志新增：
 
@@ -168,4 +168,19 @@ SPI2 第一版使用阻塞式 `HAL_SPI_TransmitReceive()`，每秒发送 `12 34 
 
 SPI回环运行期间，ADC `frames` 每秒仍增加约100，未观察到采样节拍被4字节阻塞传输破坏。关闭COM5只停止电脑端日志显示，不会停止MCU内部SPI、ADC和调度任务。
 
-下一步比较SPI阻塞、中断和DMA三种调用方式，再将回环测试抽象为可复用的设备接口层。UART后续改进项是发送队列、流式拆包/粘包处理和二进制响应帧。
+## SPI1 DMA回环（待硬件验证）
+
+SPI2的RX/TX固定占用DMA1 Channel4/5，与USART1 TX/RX DMA冲突，因此DMA版本切换为重映射SPI1：
+
+```text
+PB3 / SPI1_SCK
+PB4 / SPI1_MISO
+PB5 / SPI1_MOSI
+
+SPI1_RX -> DMA1 Channel2
+SPI1_TX -> DMA1 Channel3
+```
+
+PB5/MOSI与PB4/MISO直连。程序启动时发起第一帧，之后每秒调用 `HAL_SPI_TransmitReceive_DMA()`。启动函数立即返回；`HAL_SPI_TxRxCpltCallback()`只清除忙标志并设置完成标志；10 ms主任务再比较收发缓冲区。日志中的 `spi_n`表示已经完成并由主任务处理的DMA帧数，`spi_busy`表示打印瞬间DMA是否仍在传输。
+
+下一步烧录并验证SPI1 DMA回环；通过后整理阻塞与DMA的差异，再将SPI访问封装为设备接口层。UART后续改进项是发送队列、流式拆包/粘包处理和二进制响应帧。

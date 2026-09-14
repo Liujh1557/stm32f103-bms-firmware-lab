@@ -93,6 +93,9 @@ static const uint8_t g_spi_tx_buffer[SPI_LOOPBACK_SIZE] = {
   0x12U, 0x34U, 0xA5U, 0x5AU
 };
 static uint8_t g_spi_rx_buffer[SPI_LOOPBACK_SIZE] = {0};
+static volatile uint8_t g_spi_busy = 0U;
+static volatile uint8_t g_spi_frame_ready = 0U;
+static volatile uint8_t g_spi_error_pending = 0U;
 static uint8_t g_spi_last_ok = 0U;
 static uint32_t g_spi_transfer_count = 0U;
 static uint32_t g_spi_mismatch_count = 0U;
@@ -115,7 +118,8 @@ static uint8_t StartAdcFrame(void);
 static uint8_t StartUartLog(uint16_t length);
 static uint8_t StartUartRx(void);
 static void ProcessUartRx(void);
-static void RunSpiLoopbackTest(void);
+static uint8_t StartSpiLoopbackDma(void);
+static void ProcessSpiLoopbackResult(void);
 
 /* USER CODE END PFP */
 
@@ -157,7 +161,7 @@ int main(void)
   MX_TIM2_Init();
   MX_USART1_UART_Init();
   MX_ADC1_Init();
-  MX_SPI2_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK) {
     Error_Handler();
@@ -178,6 +182,10 @@ int main(void)
   BmsProtection_Init(&g_bms_protection, &g_bms_fault);
 
   if (StartUartRx() == 0U) {
+    Error_Handler();
+  }
+
+  if (StartSpiLoopbackDma() == 0U) {
     Error_Handler();
   }
   /* USER CODE END 2 */
@@ -266,6 +274,7 @@ static void Task_10ms(void)
   }
 
   ProcessUartRx();
+  ProcessSpiLoopbackResult();
 
   if (g_adc_error_pending != 0U) {
     g_adc_error_pending = 0U;
@@ -314,7 +323,10 @@ static void Task_1000ms(void)
   int length;
 
   HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-  RunSpiLoopbackTest();
+
+  if (StartSpiLoopbackDma() == 0U) {
+    g_spi_error_count++;
+  }
 
   if (g_uart_tx_busy != 0U) {
     g_uart_tx_drop_count++;
@@ -323,7 +335,7 @@ static void Task_1000ms(void)
 
   length = snprintf((char *)g_uart_log_buffer,
                     sizeof(g_uart_log_buffer),
-                    "t=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu,spi_ok=%u,spi_n=%lu,spi_mis=%lu,spi_err=%lu,spi_rx=%02X%02X%02X%02X\r\n",
+                    "t=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu,spi_busy=%u,spi_ok=%u,spi_n=%lu,spi_mis=%lu,spi_err=%lu,spi_rx=%02X%02X%02X%02X\r\n",
                     (unsigned long)g_system_ms,
                     (unsigned int)g_bms_data.valid,
                     (unsigned int)g_adc_busy,
@@ -344,6 +356,7 @@ static void Task_1000ms(void)
                     (unsigned long)g_uart_error_count,
                     (unsigned long)g_uart_crc_error_count,
                     (unsigned long)g_uart_protocol_error_count,
+                    (unsigned int)g_spi_busy,
                     (unsigned int)g_spi_last_ok,
                     (unsigned long)g_spi_transfer_count,
                     (unsigned long)g_spi_mismatch_count,
@@ -380,20 +393,41 @@ static uint8_t StartUartLog(uint16_t length)
   return 1U;
 }
 
-static void RunSpiLoopbackTest(void)
+static uint8_t StartSpiLoopbackDma(void)
 {
-  g_spi_transfer_count++;
-  memset(g_spi_rx_buffer, 0, sizeof(g_spi_rx_buffer));
+  if (g_spi_busy != 0U) {
+    return 0U;
+  }
 
-  if (HAL_SPI_TransmitReceive(&hspi2,
-                              (uint8_t *)g_spi_tx_buffer,
-                              g_spi_rx_buffer,
-                              SPI_LOOPBACK_SIZE,
-                              10U) != HAL_OK) {
+  memset(g_spi_rx_buffer, 0, sizeof(g_spi_rx_buffer));
+  g_spi_busy = 1U;
+
+  if (HAL_SPI_TransmitReceive_DMA(&hspi1,
+                                  (uint8_t *)g_spi_tx_buffer,
+                                  g_spi_rx_buffer,
+                                  SPI_LOOPBACK_SIZE) != HAL_OK) {
+    g_spi_busy = 0U;
+    return 0U;
+  }
+
+  return 1U;
+}
+
+static void ProcessSpiLoopbackResult(void)
+{
+  if (g_spi_error_pending != 0U) {
+    g_spi_error_pending = 0U;
     g_spi_last_ok = 0U;
     g_spi_error_count++;
+  }
+
+  if (g_spi_frame_ready == 0U) {
     return;
   }
+
+  g_spi_frame_ready = 0U;
+  __DMB();
+  g_spi_transfer_count++;
 
   if (memcmp(g_spi_tx_buffer,
              g_spi_rx_buffer,
@@ -586,6 +620,23 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
     if (huart->RxState == HAL_UART_STATE_READY) {
       g_uart_rx_restart_pending = 1U;
     }
+  }
+}
+
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+  if (hspi->Instance == SPI1) {
+    g_spi_busy = 0U;
+    __DMB();
+    g_spi_frame_ready = 1U;
+  }
+}
+
+void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
+{
+  if (hspi->Instance == SPI1) {
+    g_spi_busy = 0U;
+    g_spi_error_pending = 1U;
   }
 }
 
