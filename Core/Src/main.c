@@ -28,6 +28,7 @@
 /* USER CODE BEGIN Includes */
 #include "bms_protection.h"
 #include "bms_types.h"
+#include "uart_protocol.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -84,6 +85,8 @@ static volatile uint8_t g_uart_rx_restart_pending = 0U;
 static uint32_t g_uart_rx_count = 0U;
 static volatile uint32_t g_uart_rx_drop_count = 0U;
 static volatile uint32_t g_uart_error_count = 0U;
+static uint32_t g_uart_crc_error_count = 0U;
+static uint32_t g_uart_protocol_error_count = 0U;
 static BmsData g_bms_data = {0};
 static BmsConfig g_bms_config = {0};
 static BmsFault g_bms_fault = {0};
@@ -307,31 +310,18 @@ static void Task_1000ms(void)
 
   length = snprintf((char *)g_uart_log_buffer,
                     sizeof(g_uart_log_buffer),
-                    "t=%lu,n10=%lu,n100=%lu,valid=%u,cal=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw=%u,%u,%u,%u,%u,%u,%u,avg=%u,%u,%u,%u,%u,%u,%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu\r\n",
+                    "t=%lu,n10=%lu,n100=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu\r\n",
                     (unsigned long)g_system_ms,
                     (unsigned long)count_10ms,
                     (unsigned long)count_100ms,
                     (unsigned int)g_bms_data.valid,
-                    (unsigned int)g_bms_data.sensor_calibrated,
                     (unsigned int)g_adc_busy,
                     (unsigned long)g_adc_frame_count,
                     (unsigned long)g_adc_error_count,
                     (unsigned int)g_adc_filter_count,
                     (unsigned int)g_bms_data.cell_voltage_mv[0],
                     (unsigned int)g_bms_data.adc_raw[0],
-                    (unsigned int)g_bms_data.adc_raw[1],
-                    (unsigned int)g_bms_data.adc_raw[2],
-                    (unsigned int)g_bms_data.adc_raw[3],
-                    (unsigned int)g_bms_data.adc_raw[4],
-                    (unsigned int)g_bms_data.adc_raw[5],
-                    (unsigned int)g_bms_data.adc_raw[6],
                     (unsigned int)g_bms_data.adc_filtered[0],
-                    (unsigned int)g_bms_data.adc_filtered[1],
-                    (unsigned int)g_bms_data.adc_filtered[2],
-                    (unsigned int)g_bms_data.adc_filtered[3],
-                    (unsigned int)g_bms_data.adc_filtered[4],
-                    (unsigned int)g_bms_data.adc_filtered[5],
-                    (unsigned int)g_bms_data.adc_filtered[6],
                     (unsigned long)g_bms_fault.flags,
                     (unsigned int)g_bms_fault.active_code,
                     (unsigned int)g_bms_fault.latched,
@@ -340,7 +330,9 @@ static void Task_1000ms(void)
                     (unsigned long)g_uart_tx_drop_count,
                     (unsigned long)g_uart_rx_count,
                     (unsigned long)g_uart_rx_drop_count,
-                    (unsigned long)g_uart_error_count);
+                    (unsigned long)g_uart_error_count,
+                    (unsigned long)g_uart_crc_error_count,
+                    (unsigned long)g_uart_protocol_error_count);
 
   if (length > 0) {
     if (length >= (int)sizeof(g_uart_log_buffer)) {
@@ -384,7 +376,8 @@ static uint8_t StartUartRx(void)
 
 static void ProcessUartRx(void)
 {
-  uint16_t length;
+  UartProtocolFrame frame;
+  UartProtocolResult result;
   int response_length;
 
   if ((g_uart_rx_frame_ready == 0U) || (g_uart_tx_busy != 0U)) {
@@ -392,22 +385,31 @@ static void ProcessUartRx(void)
   }
 
   __DMB();
-  length = g_uart_rx_length;
-  while ((length > 0U)
-         && ((g_uart_rx_frame[length - 1U] == '\r')
-             || (g_uart_rx_frame[length - 1U] == '\n'))) {
-    length--;
-  }
-
-  if ((length == 4U) && (memcmp(g_uart_rx_frame, "PING", 4U) == 0)) {
+  result = UartProtocol_Parse(g_uart_rx_frame,
+                              g_uart_rx_length,
+                              &frame);
+  if ((result == UART_PROTOCOL_OK)
+      && (frame.command == UART_PROTOCOL_CMD_PING)
+      && (frame.payload_length == 0U)) {
     response_length = snprintf((char *)g_uart_log_buffer,
                                sizeof(g_uart_log_buffer),
-                               "ACK PING\r\n");
+                               "ACK PING CRC=OK\r\n");
+  } else if (result == UART_PROTOCOL_ERROR_CRC) {
+    g_uart_crc_error_count++;
+    response_length = snprintf((char *)g_uart_log_buffer,
+                               sizeof(g_uart_log_buffer),
+                               "ERR CRC\r\n");
+  } else if (result != UART_PROTOCOL_OK) {
+    g_uart_protocol_error_count++;
+    response_length = snprintf((char *)g_uart_log_buffer,
+                               sizeof(g_uart_log_buffer),
+                               "ERR FRAME code=%u\r\n",
+                               (unsigned int)result);
   } else {
     response_length = snprintf((char *)g_uart_log_buffer,
                                sizeof(g_uart_log_buffer),
-                               "ERR CMD len=%u\r\n",
-                               (unsigned int)length);
+                               "ERR CMD 0x%02X\r\n",
+                               (unsigned int)frame.command);
   }
 
   if ((response_length > 0)

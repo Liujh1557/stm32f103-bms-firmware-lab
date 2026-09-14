@@ -21,7 +21,7 @@
 - 为完成 Normal 模式 DMA 的最后一个字节发送，启用 USART1 TC 中断并在 `USART1_IRQHandler()` 中调用 `HAL_UART_IRQHandler()`；
 - USART1 RX 使用 DMA1 Channel5 和 `HAL_UARTEx_ReceiveToIdle_DMA()` 接收不定长数据；
 - RX 空闲事件回调只复制一帧、记录长度并重启 DMA，命令解析放在 10 ms 主任务中；
-- 第一条测试命令为 `PING`，识别成功后通过 TX DMA 返回 `ACK PING`；
+- USART1 命令采用带帧头、长度和 CRC16-Modbus 的二进制帧，`CMD=0x01` 为 PING；
 - 增加独立 `bms_protection` 模块，100 ms 周期执行电压保护状态机；
 - 第一版只监控 PA0 对应的第 1 路，使用 0～3.3 V 安全模拟输入和教学阈值；
 - 1000 ms 日志输出 DMA 状态、完成帧数、错误次数、第 1 路换算电压、7 路原始值和故障标志；
@@ -110,13 +110,13 @@ PA10 / USART1_RX
         -> USART1 IDLE 或 DMA TC 事件
         -> HAL_UARTEx_RxEventCallback()
         -> 复制到稳定帧缓冲区并立即重启 RX DMA
-        -> 10 ms 主任务解析 PING
-        -> USART1 TX DMA 返回 ACK PING
+        -> 10 ms 主任务解析协议帧
+        -> USART1 TX DMA 返回解析结果
 ```
 
 半传输中断被关闭，因为 32 字节的 HT 事件并不代表一帧结束。若上一帧尚未处理，新帧会被丢弃并计入 `rx_drop`；UART/DMA 错误计入 `uart_err`。该版本命令行编译通过，`text/data/bss` 为 `15952/92/2940`。
 
-板端实测以 UTF-8/ASCII 发送 `PING\n` 后收到 `ACK PING`，下一条周期日志中 `rx` 从 0 增长为 1，`rx_drop=0`、`uart_err=0`。同一秒内 `tx` 从 337 增长为 339，其中一次发送为应答、一次为周期日志，符合设计。
+基础 RX 链路版本曾在板端以 UTF-8/ASCII 发送 `PING\n`，成功收到 `ACK PING`；下一条周期日志中 `rx` 从 0 增长为 1，`rx_drop=0`、`uart_err=0`。同一秒内 `tx` 从 337 增长为 339，其中一次发送为应答、一次为周期日志，符合设计。
 
 此次测试期间 `frames` 从 33799 增长为 33899，10 ms ADC DMA 采样未受串口双向通信影响。PA0 保持接 GND，日志同时出现 `fault=0x00000002`、`code=2`、`latch=1`、`pstate=2`，因此单路欠压确认路径也已完成硬件验证；过压和恢复路径仍未完成板端验证。
 
@@ -137,6 +137,14 @@ NORMAL -> CONFIRMING -> FAULT_ACTIVE -> RECOVERING -> NORMAL
 这些是适配开发板 0～3.3 V 输入的教学参数，不是真实锂电池保护阈值。故障恢复后 `flags` 和 `active_code` 清除，`latched` 保留为 1，表示本次上电期间曾发生过故障。
 当采样数据 `valid=0` 时，保护状态保持不变，不把无效数据误判为故障恢复。`Tests/test_bms_protection.c` 提供主机端状态机测试，覆盖毛刺抑制、欠压/过压确认、回差、恢复、锁存和无效数据保持。
 
+## UART 二进制帧与 CRC（待硬件验证）
+
+UART 命令现采用二进制帧 `AA 55 | LEN | CMD | PAYLOAD | CRC_LO CRC_H`。`LEN` 表示 `CMD + PAYLOAD` 的字节数，CRC16-Modbus 覆盖 `LEN + CMD + PAYLOAD`。PING 命令的完整测试帧为 `AA 55 01 01 C1 E0`，需要在串口助手中使用十六进制发送且不附加换行；有效帧返回 `ACK PING CRC=OK`，错误 CRC 返回 `ERR CRC`。
+
+为避免新增协议计数后超过 256 字节 TX 缓冲区，周期日志只保留当前有效测试通道的 `raw0`、`avg0` 和 `cell0`，不再每秒打印其余悬空 ADC 通道。日志新增 `crc_err` 和 `proto_err`；详细多通道数据后续通过查询命令按需返回。
+
+纯 C 解析器位于 `Core/Src/uart_protocol.c`，主机端测试覆盖正确 PING、错误帧头、错误长度和错误 CRC。测试已经通过，固件交叉编译也已通过，`text/data/bss` 为 `16068/92/2948`。
+
 ## 下一步
 
-下一步为 UART 命令增加明确的帧格式和 CRC 校验；完成后进入 SPI2 回环实验。过压与恢复路径保留为后续保护模块的硬件测试项。
+下一步烧录并验证正确 PING 帧、错误 CRC 帧和协议错误计数；完成后进入 SPI2 回环实验。过压与恢复路径保留为后续保护模块的硬件测试项。
