@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
+#include "can.h"
 #include "dma.h"
 #include "spi.h"
 #include "tim.h"
@@ -29,6 +30,7 @@
 /* USER CODE BEGIN Includes */
 #include "bms_protection.h"
 #include "bms_types.h"
+#include "can_if.h"
 #include "spi_if.h"
 #include "uart_protocol.h"
 #include <stdio.h>
@@ -45,9 +47,11 @@
 /* USER CODE BEGIN PD */
 #define BMS_ADC_VREF_MV      3300U
 #define BMS_ADC_MAX_COUNTS   4095U
-#define UART_LOG_BUFFER_SIZE 320U
+#define UART_LOG_BUFFER_SIZE 448U
 #define UART_RX_BUFFER_SIZE  64U
 #define SPI_LOOPBACK_SIZE     4U
+#define CAN_LOOPBACK_ID       0x321U
+#define CAN_LOOPBACK_SIZE     8U
 
 /* USER CODE END PD */
 
@@ -99,6 +103,15 @@ static uint8_t g_spi_last_ok = 0U;
 static uint32_t g_spi_transfer_count = 0U;
 static uint32_t g_spi_mismatch_count = 0U;
 static uint32_t g_spi_error_count = 0U;
+static const uint8_t g_can_tx_data[CAN_LOOPBACK_SIZE] = {
+  0x12U, 0x34U, 0xA5U, 0x5AU, 0x01U, 0x02U, 0x03U, 0x04U
+};
+static uint8_t g_can_last_rx_data[CAN_LOOPBACK_SIZE] = {0};
+static uint16_t g_can_last_rx_id = 0U;
+static uint32_t g_can_tx_count = 0U;
+static uint32_t g_can_rx_count = 0U;
+static uint32_t g_can_mismatch_count = 0U;
+static uint32_t g_can_send_error_count = 0U;
 static BmsData g_bms_data = {0};
 static BmsConfig g_bms_config = {0};
 static BmsFault g_bms_fault = {0};
@@ -119,6 +132,8 @@ static uint8_t StartUartRx(void);
 static void ProcessUartRx(void);
 static uint8_t StartSpiLoopbackDma(void);
 static void ProcessSpiLoopbackResult(void);
+static void StartCanLoopbackTest(void);
+static void ProcessCanLoopbackResult(void);
 
 /* USER CODE END PFP */
 
@@ -161,6 +176,7 @@ int main(void)
   MX_USART1_UART_Init();
   MX_ADC1_Init();
   MX_SPI1_Init();
+  MX_CAN_Init();
   /* USER CODE BEGIN 2 */
   if (HAL_ADCEx_Calibration_Start(&hadc1) != HAL_OK) {
     Error_Handler();
@@ -180,6 +196,10 @@ int main(void)
   g_bms_config.recovery_ms = 500U;
   BmsProtection_Init(&g_bms_protection, &g_bms_fault);
   SpiIf_Init(&hspi1);
+
+  if (CanIf_Init(&hcan) == 0U) {
+    Error_Handler();
+  }
 
   if (StartUartRx() == 0U) {
     Error_Handler();
@@ -275,6 +295,7 @@ static void Task_10ms(void)
 
   ProcessUartRx();
   ProcessSpiLoopbackResult();
+  ProcessCanLoopbackResult();
 
   if (g_adc_error_pending != 0U) {
     g_adc_error_pending = 0U;
@@ -316,6 +337,7 @@ static void Task_100ms(void)
                        &g_bms_config,
                        &g_bms_fault,
                        100U);
+  StartCanLoopbackTest();
 }
 
 static void Task_1000ms(void)
@@ -335,7 +357,7 @@ static void Task_1000ms(void)
 
   length = snprintf((char *)g_uart_log_buffer,
                     sizeof(g_uart_log_buffer),
-                    "t=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu,spi_busy=%u,spi_ok=%u,spi_n=%lu,spi_mis=%lu,spi_err=%lu,spi_rx=%02X%02X%02X%02X\r\n",
+                    "t=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu,spi_busy=%u,spi_ok=%u,spi_n=%lu,spi_mis=%lu,spi_err=%lu,spi_rx=%02X%02X%02X%02X,can_tx=%lu,can_rx=%lu,can_mis=%lu,can_err=%lu,can_drop=%lu,can_id=%03X,can_data=%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
                     (unsigned long)g_system_ms,
                     (unsigned int)g_bms_data.valid,
                     (unsigned int)g_adc_busy,
@@ -364,7 +386,22 @@ static void Task_1000ms(void)
                     (unsigned int)g_spi_last_rx_buffer[0],
                     (unsigned int)g_spi_last_rx_buffer[1],
                     (unsigned int)g_spi_last_rx_buffer[2],
-                    (unsigned int)g_spi_last_rx_buffer[3]);
+                    (unsigned int)g_spi_last_rx_buffer[3],
+                    (unsigned long)g_can_tx_count,
+                    (unsigned long)g_can_rx_count,
+                    (unsigned long)g_can_mismatch_count,
+                    (unsigned long)(g_can_send_error_count
+                                    + CanIf_GetErrorCount()),
+                    (unsigned long)CanIf_GetRxDropCount(),
+                    (unsigned int)g_can_last_rx_id,
+                    (unsigned int)g_can_last_rx_data[0],
+                    (unsigned int)g_can_last_rx_data[1],
+                    (unsigned int)g_can_last_rx_data[2],
+                    (unsigned int)g_can_last_rx_data[3],
+                    (unsigned int)g_can_last_rx_data[4],
+                    (unsigned int)g_can_last_rx_data[5],
+                    (unsigned int)g_can_last_rx_data[6],
+                    (unsigned int)g_can_last_rx_data[7]);
 
   if (length > 0) {
     if (length >= (int)sizeof(g_uart_log_buffer)) {
@@ -425,6 +462,38 @@ static void ProcessSpiLoopbackResult(void)
   }
 
   g_spi_last_ok = 1U;
+}
+
+static void StartCanLoopbackTest(void)
+{
+  if (CanIf_SendStandard(CAN_LOOPBACK_ID,
+                         g_can_tx_data,
+                         CAN_LOOPBACK_SIZE) != 0U) {
+    g_can_tx_count++;
+  } else {
+    g_can_send_error_count++;
+  }
+}
+
+static void ProcessCanLoopbackResult(void)
+{
+  CanIfFrame frame;
+
+  if (CanIf_TakeRxFrame(&frame) == 0U) {
+    return;
+  }
+
+  g_can_rx_count++;
+  g_can_last_rx_id = frame.standard_id;
+  memcpy(g_can_last_rx_data, frame.data, CAN_LOOPBACK_SIZE);
+
+  if ((frame.standard_id != CAN_LOOPBACK_ID)
+      || (frame.dlc != CAN_LOOPBACK_SIZE)
+      || (memcmp(frame.data,
+                 g_can_tx_data,
+                 CAN_LOOPBACK_SIZE) != 0)) {
+    g_can_mismatch_count++;
+  }
 }
 
 static uint8_t StartUartRx(void)

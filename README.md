@@ -193,4 +193,10 @@ SPI DMA总线状态和HAL回调已从 `main.c` 抽离到 `spi_if.c/.h`。接口�
 
 接口层重构版重新烧录后，通过COM5直接读取连续5条日志：`t=20000～24000 ms` 期间 `spi_n` 从20增长到24，`spi_busy=1`、`spi_ok=1`、`spi_mis=0`、`spi_err=0`、`spi_rx=1234A55A`；ADC `frames` 从1999增长到2399、`adc_err=0`。这确认重构没有改变SPI DMA及其他周期任务的板端行为。
 
+## bxCAN内部回环（待硬件验证）
+
+CAN1使用PA11/RX、PA12/TX，APB1为8 MHz，位时序为Prescaler=1、BS1=13 TQ、BS2=2 TQ、SJW=1 TQ，对应500 kbit/s和87.5%采样点。第一版使用内部Loopback，不依赖外部收发器或USB-CAN。
+
+`can_if.c/.h`负责全接收过滤器、CAN启动、FIFO0通知、标准帧发送及RX0回调取帧；100 ms任务发送标准ID `0x321`、DLC 8、数据 `12 34 A5 5A 01 02 03 04`，10 ms任务比较接收结果。日志新增 `can_tx`、`can_rx`、`can_mis`、`can_err`、`can_drop`、`can_id`和`can_data`。
+
 下一步整理SPI阻塞与DMA的代码路径、CPU占用和缓冲区生命周期差异，再将SPI访问封装为设备接口层。之后按学习路线进入CAN；UART后续改进项是发送队列、流式拆包/粘包处理和二进制响应帧。
