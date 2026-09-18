@@ -203,4 +203,10 @@ CAN1使用PA11/RX、PA12/TX，APB1为8 MHz，位时序为Prescaler=1、BS1=13 TQ
 
 同期ADC `frames` 每秒增加约100且 `adc_err=0`。SPI日志出现 `spi_rx=FFFFFFFF`、`spi_mis`持续增加，表示PB4/MISO处于悬空状态，通常是CAN接线时移除了 `PB5/MOSI -> PB4/MISO` 回环线；这不是CAN功能导致的SPI软件回归。
 
+## bxCAN正常模式（待真实总线验证）
+
+Normal模式继续使用500 kbit/s，并启用CAN TX、RX FIFO0和SCE三条中断。CAN接口层现在区分：`can_q`为成功放入发送邮箱，`can_tx`为收到发送完成中断（真实总线上已获得ACK），`can_rx`为收到USB-CAN发来的帧，`can_err`和`can_le`记录错误中断及最后错误码。
+
+STM32在启动5秒后每100 ms发送标准帧ID `0x321`、数据 `12 34 A5 5A 01 02 03 04`。USB-CAN需要配置为500 kbit/s，并周期发送标准帧ID `0x322`、DLC 8、数据 `A5 5A 12 34 04 03 02 01`。STM32接收后检查ID、DLC和全部8字节，错误计入 `can_mis`。
+
 下一步整理SPI阻塞与DMA的代码路径、CPU占用和缓冲区生命周期差异，再将SPI访问封装为设备接口层。之后按学习路线进入CAN；UART后续改进项是发送队列、流式拆包/粘包处理和二进制响应帧。

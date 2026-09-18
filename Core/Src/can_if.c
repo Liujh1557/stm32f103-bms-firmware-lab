@@ -5,8 +5,10 @@
 static CAN_HandleTypeDef *g_can_handle = 0;
 static CanIfFrame g_can_rx_frame = {0};
 static volatile uint8_t g_can_rx_ready = 0U;
+static volatile uint32_t g_can_tx_complete_count = 0U;
 static volatile uint32_t g_can_rx_drop_count = 0U;
 static volatile uint32_t g_can_error_count = 0U;
+static volatile uint32_t g_can_last_error = HAL_CAN_ERROR_NONE;
 
 uint8_t CanIf_Init(CAN_HandleTypeDef *handle)
 {
@@ -18,8 +20,10 @@ uint8_t CanIf_Init(CAN_HandleTypeDef *handle)
 
     g_can_handle = handle;
     g_can_rx_ready = 0U;
+    g_can_tx_complete_count = 0U;
     g_can_rx_drop_count = 0U;
     g_can_error_count = 0U;
+    g_can_last_error = HAL_CAN_ERROR_NONE;
 
     filter.FilterBank = 0U;
     filter.FilterMode = CAN_FILTERMODE_IDMASK;
@@ -39,8 +43,14 @@ uint8_t CanIf_Init(CAN_HandleTypeDef *handle)
         return 0U;
     }
     if (HAL_CAN_ActivateNotification(handle,
-                                     CAN_IT_RX_FIFO0_MSG_PENDING
-                                     | CAN_IT_RX_FIFO0_OVERRUN) != HAL_OK) {
+                                     CAN_IT_TX_MAILBOX_EMPTY
+                                     | CAN_IT_RX_FIFO0_MSG_PENDING
+                                     | CAN_IT_RX_FIFO0_OVERRUN
+                                     | CAN_IT_ERROR_WARNING
+                                     | CAN_IT_ERROR_PASSIVE
+                                     | CAN_IT_BUSOFF
+                                     | CAN_IT_LAST_ERROR_CODE
+                                     | CAN_IT_ERROR) != HAL_OK) {
         return 0U;
     }
 
@@ -96,9 +106,62 @@ uint32_t CanIf_GetRxDropCount(void)
     return g_can_rx_drop_count;
 }
 
+uint32_t CanIf_GetTxCompleteCount(void)
+{
+    return g_can_tx_complete_count;
+}
+
 uint32_t CanIf_GetErrorCount(void)
 {
     return g_can_error_count;
+}
+
+uint32_t CanIf_GetLastError(void)
+{
+    return g_can_last_error;
+}
+
+static void CanIf_OnTxComplete(CAN_HandleTypeDef *hcan)
+{
+    if (hcan == g_can_handle) {
+        g_can_tx_complete_count++;
+    }
+}
+
+void HAL_CAN_TxMailbox0CompleteCallback(CAN_HandleTypeDef *hcan)
+{
+    CanIf_OnTxComplete(hcan);
+}
+
+void HAL_CAN_TxMailbox1CompleteCallback(CAN_HandleTypeDef *hcan)
+{
+    CanIf_OnTxComplete(hcan);
+}
+
+void HAL_CAN_TxMailbox2CompleteCallback(CAN_HandleTypeDef *hcan)
+{
+    CanIf_OnTxComplete(hcan);
+}
+
+void HAL_CAN_TxMailbox0AbortCallback(CAN_HandleTypeDef *hcan)
+{
+    if (hcan == g_can_handle) {
+        g_can_error_count++;
+    }
+}
+
+void HAL_CAN_TxMailbox1AbortCallback(CAN_HandleTypeDef *hcan)
+{
+    if (hcan == g_can_handle) {
+        g_can_error_count++;
+    }
+}
+
+void HAL_CAN_TxMailbox2AbortCallback(CAN_HandleTypeDef *hcan)
+{
+    if (hcan == g_can_handle) {
+        g_can_error_count++;
+    }
 }
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
@@ -138,6 +201,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
 {
     if (hcan == g_can_handle) {
+        g_can_last_error = HAL_CAN_GetError(hcan);
         g_can_error_count++;
     }
 }
