@@ -364,7 +364,7 @@ static void Task_1000ms(void)
 
   length = snprintf((char *)g_uart_log_buffer,
                     sizeof(g_uart_log_buffer),
-                    "t=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu,spi_busy=%u,spi_ok=%u,spi_n=%lu,spi_mis=%lu,spi_err=%lu,spi_rx=%02X%02X%02X%02X,can_q=%lu,can_tx=%lu,can_rx=%lu,can_mis=%lu,can_err=%lu,can_le=0x%08lX,can_drop=%lu,can_id=%03X,can_data=%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
+                    "t=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu,spi_busy=%u,spi_ok=%u,spi_n=%lu,spi_mis=%lu,spi_err=%lu,spi_rx=%02X%02X%02X%02X,can_q=%lu,can_tx=%lu,can_rx=%lu,can_mis=%lu,can_err=%lu,can_fault=%u,can_le=0x%08lX,can_drop=%lu,can_id=%03X,can_data=%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
                     (unsigned long)g_system_ms,
                     (unsigned int)g_bms_data.valid,
                     (unsigned int)g_adc_busy,
@@ -400,6 +400,7 @@ static void Task_1000ms(void)
                     (unsigned long)g_can_mismatch_count,
                     (unsigned long)(g_can_send_error_count
                                     + CanIf_GetErrorCount()),
+                    (unsigned int)CanIf_IsFaulted(),
                     (unsigned long)CanIf_GetLastError(),
                     (unsigned long)CanIf_GetRxDropCount(),
                     (unsigned int)g_can_last_rx_id,
@@ -475,6 +476,10 @@ static void ProcessSpiLoopbackResult(void)
 
 static void StartCanNormalTest(void)
 {
+  if (CanIf_IsFaulted() != 0U) {
+    return;
+  }
+
   if (CanIf_SendStandard(CAN_TX_ID,
                          g_can_tx_data,
                          CAN_FRAME_SIZE) != 0U) {

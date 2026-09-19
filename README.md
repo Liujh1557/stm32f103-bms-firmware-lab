@@ -209,4 +209,6 @@ Normal模式继续使用500 kbit/s，并启用CAN TX、RX FIFO0和SCE三条中�
 
 STM32在启动5秒后每100 ms发送标准帧ID `0x321`、数据 `12 34 A5 5A 01 02 03 04`。USB-CAN需要配置为500 kbit/s，并周期发送标准帧ID `0x322`、DLC 8、数据 `A5 5A 12 34 04 03 02 01`。STM32接收后检查ID、DLC和全部8字节，错误计入 `can_mis`。
 
+首次Normal模式测试未获得ACK，日志出现 `can_le=0x00000087`（Error Warning、Error Passive、Bus-Off、Bit Dominant Error），并因持续错误中断干扰ADC处理。当前接口层在首次严重错误后锁存 `can_fault=1`、停止继续排队、中止发送邮箱并关闭错误类通知，保留最后错误码，避免物理层故障拖垮其他周期任务；复位后重新测试。
+
 下一步整理SPI阻塞与DMA的代码路径、CPU占用和缓冲区生命周期差异，再将SPI访问封装为设备接口层。之后按学习路线进入CAN；UART后续改进项是发送队列、流式拆包/粘包处理和二进制响应帧。

@@ -19,5 +19,6 @@ uint32_t CanIf_GetTxCompleteCount(void);
 uint32_t CanIf_GetRxDropCount(void);
 uint32_t CanIf_GetErrorCount(void);
 uint32_t CanIf_GetLastError(void);
+uint8_t CanIf_IsFaulted(void);
 
 #endif /* CAN_IF_H */
