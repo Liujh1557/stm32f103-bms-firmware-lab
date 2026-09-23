@@ -2,6 +2,17 @@
 
 #include <string.h>
 
+#define CAN_IF_RETRY_PERIOD_MS 3000U
+#define CAN_IF_ERROR_NOTIFICATIONS (CAN_IT_ERROR_WARNING \
+                                    | CAN_IT_ERROR_PASSIVE \
+                                    | CAN_IT_BUSOFF \
+                                    | CAN_IT_LAST_ERROR_CODE \
+                                    | CAN_IT_ERROR)
+#define CAN_IF_NOTIFICATIONS (CAN_IT_TX_MAILBOX_EMPTY \
+                              | CAN_IT_RX_FIFO0_MSG_PENDING \
+                              | CAN_IT_RX_FIFO0_OVERRUN \
+                              | CAN_IF_ERROR_NOTIFICATIONS)
+
 static CAN_HandleTypeDef *g_can_handle = 0;
 static CanIfFrame g_can_rx_frame = {0};
 static volatile uint8_t g_can_rx_ready = 0U;
@@ -10,6 +21,9 @@ static volatile uint32_t g_can_rx_drop_count = 0U;
 static volatile uint32_t g_can_error_count = 0U;
 static volatile uint32_t g_can_last_error = HAL_CAN_ERROR_NONE;
 static volatile uint8_t g_can_faulted = 0U;
+static volatile uint32_t g_can_faulted_at_ms = 0U;
+static uint32_t g_can_recovery_count = 0U;
+static uint32_t g_can_recovery_fail_count = 0U;
 
 uint8_t CanIf_Init(CAN_HandleTypeDef *handle)
 {
@@ -26,6 +40,9 @@ uint8_t CanIf_Init(CAN_HandleTypeDef *handle)
     g_can_error_count = 0U;
     g_can_last_error = HAL_CAN_ERROR_NONE;
     g_can_faulted = 0U;
+    g_can_faulted_at_ms = 0U;
+    g_can_recovery_count = 0U;
+    g_can_recovery_fail_count = 0U;
 
     filter.FilterBank = 0U;
     filter.FilterMode = CAN_FILTERMODE_IDMASK;
@@ -45,14 +62,7 @@ uint8_t CanIf_Init(CAN_HandleTypeDef *handle)
         return 0U;
     }
     if (HAL_CAN_ActivateNotification(handle,
-                                     CAN_IT_TX_MAILBOX_EMPTY
-                                     | CAN_IT_RX_FIFO0_MSG_PENDING
-                                     | CAN_IT_RX_FIFO0_OVERRUN
-                                     | CAN_IT_ERROR_WARNING
-                                     | CAN_IT_ERROR_PASSIVE
-                                     | CAN_IT_BUSOFF
-                                     | CAN_IT_LAST_ERROR_CODE
-                                     | CAN_IT_ERROR) != HAL_OK) {
+                                     CAN_IF_NOTIFICATIONS) != HAL_OK) {
         return 0U;
     }
 
@@ -104,6 +114,44 @@ uint8_t CanIf_TakeRxFrame(CanIfFrame *frame)
     return 1U;
 }
 
+void CanIf_Service(void)
+{
+    uint32_t now_ms;
+
+    if ((g_can_handle == 0) || (g_can_faulted == 0U)) {
+        return;
+    }
+
+    now_ms = HAL_GetTick();
+    if ((uint32_t)(now_ms - g_can_faulted_at_ms)
+        < CAN_IF_RETRY_PERIOD_MS) {
+        return;
+    }
+
+    /* Retrying is paced even when the controller cannot be restarted. */
+    g_can_faulted_at_ms = now_ms;
+
+    if (HAL_CAN_Stop(g_can_handle) != HAL_OK) {
+        g_can_recovery_fail_count++;
+        return;
+    }
+    if (HAL_CAN_Start(g_can_handle) != HAL_OK) {
+        g_can_recovery_fail_count++;
+        return;
+    }
+
+    g_can_rx_ready = 0U;
+    g_can_faulted = 0U;
+    if (HAL_CAN_ActivateNotification(g_can_handle,
+                                     CAN_IF_NOTIFICATIONS) != HAL_OK) {
+        g_can_faulted = 1U;
+        g_can_recovery_fail_count++;
+        return;
+    }
+
+    g_can_recovery_count++;
+}
+
 uint32_t CanIf_GetRxDropCount(void)
 {
     return g_can_rx_drop_count;
@@ -122,6 +170,16 @@ uint32_t CanIf_GetErrorCount(void)
 uint32_t CanIf_GetLastError(void)
 {
     return g_can_last_error;
+}
+
+uint32_t CanIf_GetRecoveryCount(void)
+{
+    return g_can_recovery_count;
+}
+
+uint32_t CanIf_GetRecoveryFailCount(void)
+{
+    return g_can_recovery_fail_count;
 }
 
 uint8_t CanIf_IsFaulted(void)
@@ -207,15 +265,12 @@ void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
         if (g_can_faulted == 0U) {
             g_can_error_count++;
             g_can_faulted = 1U;
+            g_can_faulted_at_ms = HAL_GetTick();
         }
 
         (void)HAL_CAN_DeactivateNotification(
             hcan,
-            CAN_IT_ERROR_WARNING
-            | CAN_IT_ERROR_PASSIVE
-            | CAN_IT_BUSOFF
-            | CAN_IT_LAST_ERROR_CODE
-            | CAN_IT_ERROR);
+            CAN_IF_ERROR_NOTIFICATIONS);
         (void)HAL_CAN_AbortTxRequest(hcan,
                                     CAN_TX_MAILBOX0
                                     | CAN_TX_MAILBOX1

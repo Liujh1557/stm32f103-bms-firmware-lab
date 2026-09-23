@@ -31,6 +31,7 @@
 #include "bms_protection.h"
 #include "bms_types.h"
 #include "can_if.h"
+#include "can_protocol.h"
 #include "spi_if.h"
 #include "uart_protocol.h"
 #include <stdio.h>
@@ -47,13 +48,11 @@
 /* USER CODE BEGIN PD */
 #define BMS_ADC_VREF_MV      3300U
 #define BMS_ADC_MAX_COUNTS   4095U
-#define UART_LOG_BUFFER_SIZE 448U
+#define UART_LOG_BUFFER_SIZE 640U
 #define UART_RX_BUFFER_SIZE  64U
 #define SPI_LOOPBACK_SIZE     4U
-#define CAN_TX_ID             0x321U
-#define CAN_RX_ID             0x322U
-#define CAN_FRAME_SIZE        8U
 #define CAN_START_DELAY_MS    5000U
+#define CAN_PEER_TIMEOUT_MS   1000U
 
 /* USER CODE END PD */
 
@@ -105,18 +104,19 @@ static uint8_t g_spi_last_ok = 0U;
 static uint32_t g_spi_transfer_count = 0U;
 static uint32_t g_spi_mismatch_count = 0U;
 static uint32_t g_spi_error_count = 0U;
-static const uint8_t g_can_tx_data[CAN_FRAME_SIZE] = {
-  0x12U, 0x34U, 0xA5U, 0x5AU, 0x01U, 0x02U, 0x03U, 0x04U
-};
-static const uint8_t g_can_expected_rx_data[CAN_FRAME_SIZE] = {
+static const uint8_t g_can_expected_rx_data[CAN_PROTOCOL_DLC] = {
   0xA5U, 0x5AU, 0x12U, 0x34U, 0x04U, 0x03U, 0x02U, 0x01U
 };
-static uint8_t g_can_last_rx_data[CAN_FRAME_SIZE] = {0};
+static uint8_t g_can_last_rx_data[CAN_PROTOCOL_DLC] = {0};
 static uint16_t g_can_last_rx_id = 0U;
 static uint32_t g_can_tx_queued_count = 0U;
 static uint32_t g_can_rx_count = 0U;
 static uint32_t g_can_mismatch_count = 0U;
 static uint32_t g_can_send_error_count = 0U;
+static uint32_t g_can_last_valid_rx_ms = 0U;
+static uint32_t g_can_peer_timeout_count = 0U;
+static uint8_t g_can_peer_online = 0U;
+static uint8_t g_can_heartbeat_sequence = 0U;
 static BmsData g_bms_data = {0};
 static BmsConfig g_bms_config = {0};
 static BmsFault g_bms_fault = {0};
@@ -137,7 +137,8 @@ static uint8_t StartUartRx(void);
 static void ProcessUartRx(void);
 static uint8_t StartSpiLoopbackDma(void);
 static void ProcessSpiLoopbackResult(void);
-static void StartCanNormalTest(void);
+static void SendCanStatus(void);
+static void SendCanHeartbeat(void);
 static void ProcessCanNormalResult(void);
 
 /* USER CODE END PFP */
@@ -340,13 +341,22 @@ static void Task_10ms(void)
 static void Task_100ms(void)
 {
   count_100ms++;
+  CanIf_Service();
   BmsProtection_Update(&g_bms_protection,
                        &g_bms_data,
                        &g_bms_config,
                        &g_bms_fault,
                        100U);
+
+  if ((g_can_peer_online != 0U)
+      && ((uint32_t)(g_system_ms - g_can_last_valid_rx_ms)
+          > CAN_PEER_TIMEOUT_MS)) {
+    g_can_peer_online = 0U;
+    g_can_peer_timeout_count++;
+  }
+
   if (g_system_ms >= CAN_START_DELAY_MS) {
-    StartCanNormalTest();
+    SendCanStatus();
   }
 }
 
@@ -360,6 +370,10 @@ static void Task_1000ms(void)
     g_spi_error_count++;
   }
 
+  if (g_system_ms >= CAN_START_DELAY_MS) {
+    SendCanHeartbeat();
+  }
+
   if (g_uart_tx_busy != 0U) {
     g_uart_tx_drop_count++;
     return;
@@ -367,7 +381,7 @@ static void Task_1000ms(void)
 
   length = snprintf((char *)g_uart_log_buffer,
                     sizeof(g_uart_log_buffer),
-                    "t=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu,spi_busy=%u,spi_ok=%u,spi_n=%lu,spi_mis=%lu,spi_err=%lu,spi_rx=%02X%02X%02X%02X,can_q=%lu,can_tx=%lu,can_rx=%lu,can_mis=%lu,can_err=%lu,can_fault=%u,can_le=0x%08lX,can_drop=%lu,can_id=%03X,can_data=%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
+                    "t=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu,spi_busy=%u,spi_ok=%u,spi_n=%lu,spi_mis=%lu,spi_err=%lu,spi_rx=%02X%02X%02X%02X,can_q=%lu,can_tx=%lu,can_rx=%lu,can_mis=%lu,can_err=%lu,can_fault=%u,can_le=0x%08lX,can_drop=%lu,can_rec=%lu,can_rf=%lu,can_peer=%u,can_to=%lu,can_id=%03X,can_data=%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
                     (unsigned long)g_system_ms,
                     (unsigned int)g_bms_data.valid,
                     (unsigned int)g_adc_busy,
@@ -406,6 +420,10 @@ static void Task_1000ms(void)
                     (unsigned int)CanIf_IsFaulted(),
                     (unsigned long)CanIf_GetLastError(),
                     (unsigned long)CanIf_GetRxDropCount(),
+                    (unsigned long)CanIf_GetRecoveryCount(),
+                    (unsigned long)CanIf_GetRecoveryFailCount(),
+                    (unsigned int)g_can_peer_online,
+                    (unsigned long)g_can_peer_timeout_count,
                     (unsigned int)g_can_last_rx_id,
                     (unsigned int)g_can_last_rx_data[0],
                     (unsigned int)g_can_last_rx_data[1],
@@ -416,14 +434,14 @@ static void Task_1000ms(void)
                     (unsigned int)g_can_last_rx_data[6],
                     (unsigned int)g_can_last_rx_data[7]);
 
-  if (length > 0) {
-    if (length >= (int)sizeof(g_uart_log_buffer)) {
-      length = (int)sizeof(g_uart_log_buffer) - 1;
-    }
+  if ((length <= 0)
+      || (length >= (int)sizeof(g_uart_log_buffer))) {
+    g_uart_tx_drop_count++;
+    return;
+  }
 
-    if (StartUartLog((uint16_t)length) == 0U) {
-      g_uart_tx_drop_count++;
-    }
+  if (StartUartLog((uint16_t)length) == 0U) {
+    g_uart_tx_drop_count++;
   }
 }
 
@@ -477,16 +495,49 @@ static void ProcessSpiLoopbackResult(void)
   g_spi_last_ok = 1U;
 }
 
-static void StartCanNormalTest(void)
+static void SendCanStatus(void)
 {
+  uint8_t frame[CAN_PROTOCOL_DLC];
+
   if (CanIf_IsFaulted() != 0U) {
     return;
   }
 
-  if (CanIf_SendStandard(CAN_TX_ID,
-                         g_can_tx_data,
-                         CAN_FRAME_SIZE) != 0U) {
+  CanProtocol_EncodeStatus(g_bms_data.cell_voltage_mv[0],
+                           g_bms_fault.flags,
+                           g_bms_data.valid,
+                           (uint8_t)g_bms_fault.active_code,
+                           frame);
+
+  if (CanIf_SendStandard(CAN_PROTOCOL_STATUS_ID,
+                         frame,
+                         CAN_PROTOCOL_DLC) != 0U) {
     g_can_tx_queued_count++;
+  } else {
+    g_can_send_error_count++;
+  }
+}
+
+static void SendCanHeartbeat(void)
+{
+  uint8_t frame[CAN_PROTOCOL_DLC];
+
+  if (CanIf_IsFaulted() != 0U) {
+    return;
+  }
+
+  CanProtocol_EncodeHeartbeat(g_system_ms / 1000U,
+                              g_can_heartbeat_sequence,
+                              (uint8_t)g_bms_protection.state,
+                              g_bms_fault.latched,
+                              g_can_peer_online,
+                              frame);
+
+  if (CanIf_SendStandard(CAN_PROTOCOL_HEARTBEAT_ID,
+                         frame,
+                         CAN_PROTOCOL_DLC) != 0U) {
+    g_can_tx_queued_count++;
+    g_can_heartbeat_sequence++;
   } else {
     g_can_send_error_count++;
   }
@@ -502,15 +553,19 @@ static void ProcessCanNormalResult(void)
 
   g_can_rx_count++;
   g_can_last_rx_id = frame.standard_id;
-  memcpy(g_can_last_rx_data, frame.data, CAN_FRAME_SIZE);
+  memcpy(g_can_last_rx_data, frame.data, CAN_PROTOCOL_DLC);
 
-  if ((frame.standard_id != CAN_RX_ID)
-      || (frame.dlc != CAN_FRAME_SIZE)
+  if ((frame.standard_id != CAN_PROTOCOL_COMMAND_ID)
+      || (frame.dlc != CAN_PROTOCOL_DLC)
       || (memcmp(frame.data,
                  g_can_expected_rx_data,
-                 CAN_FRAME_SIZE) != 0)) {
+                 CAN_PROTOCOL_DLC) != 0)) {
     g_can_mismatch_count++;
+    return;
   }
+
+  g_can_last_valid_rx_ms = g_system_ms;
+  g_can_peer_online = 1U;
 }
 
 static uint8_t StartUartRx(void)
