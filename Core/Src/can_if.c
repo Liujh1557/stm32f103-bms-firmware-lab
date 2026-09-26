@@ -14,10 +14,12 @@
                               | CAN_IF_ERROR_NOTIFICATIONS)
 
 static CAN_HandleTypeDef *g_can_handle = 0;
-static CanIfFrame g_can_rx_frame = {0};
-static volatile uint8_t g_can_rx_ready = 0U;
+static CanRxQueue g_can_rx_queue = {0};
 static volatile uint32_t g_can_tx_complete_count = 0U;
 static volatile uint32_t g_can_rx_drop_count = 0U;
+static volatile uint32_t g_can_rx_seen_count = 0U;
+static volatile uint32_t g_can_rx_hw_overrun_count = 0U;
+static volatile uint8_t g_can_rx_queue_peak = 0U;
 static volatile uint32_t g_can_error_count = 0U;
 static volatile uint32_t g_can_last_error = HAL_CAN_ERROR_NONE;
 static volatile uint8_t g_can_faulted = 0U;
@@ -34,9 +36,12 @@ uint8_t CanIf_Init(CAN_HandleTypeDef *handle)
     }
 
     g_can_handle = handle;
-    g_can_rx_ready = 0U;
+    CanRxQueue_Init(&g_can_rx_queue);
     g_can_tx_complete_count = 0U;
     g_can_rx_drop_count = 0U;
+    g_can_rx_seen_count = 0U;
+    g_can_rx_hw_overrun_count = 0U;
+    g_can_rx_queue_peak = 0U;
     g_can_error_count = 0U;
     g_can_last_error = HAL_CAN_ERROR_NONE;
     g_can_faulted = 0U;
@@ -104,14 +109,7 @@ uint8_t CanIf_SendStandard(uint16_t standard_id,
 
 uint8_t CanIf_TakeRxFrame(CanIfFrame *frame)
 {
-    if ((frame == 0) || (g_can_rx_ready == 0U)) {
-        return 0U;
-    }
-
-    __DMB();
-    *frame = g_can_rx_frame;
-    g_can_rx_ready = 0U;
-    return 1U;
+    return CanRxQueue_Pop(&g_can_rx_queue, frame);
 }
 
 void CanIf_Service(void)
@@ -140,7 +138,6 @@ void CanIf_Service(void)
         return;
     }
 
-    g_can_rx_ready = 0U;
     g_can_faulted = 0U;
     if (HAL_CAN_ActivateNotification(g_can_handle,
                                      CAN_IF_NOTIFICATIONS) != HAL_OK) {
@@ -155,6 +152,26 @@ void CanIf_Service(void)
 uint32_t CanIf_GetRxDropCount(void)
 {
     return g_can_rx_drop_count;
+}
+
+uint32_t CanIf_GetRxSeenCount(void)
+{
+    return g_can_rx_seen_count;
+}
+
+uint32_t CanIf_GetRxHwOverrunCount(void)
+{
+    return g_can_rx_hw_overrun_count;
+}
+
+uint8_t CanIf_GetRxQueueDepth(void)
+{
+    return CanRxQueue_GetDepth(&g_can_rx_queue);
+}
+
+uint8_t CanIf_GetRxQueuePeak(void)
+{
+    return g_can_rx_queue_peak;
 }
 
 uint32_t CanIf_GetTxCompleteCount(void)
@@ -228,6 +245,8 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
     CAN_RxHeaderTypeDef header;
     uint8_t data[8];
+    CanIfFrame frame = {0};
+    uint8_t depth;
 
     if (hcan != g_can_handle) {
         return;
@@ -245,23 +264,30 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
         return;
     }
 
-    if (g_can_rx_ready != 0U) {
+    frame.standard_id = (uint16_t)header.StdId;
+    frame.dlc = (uint8_t)header.DLC;
+    memcpy(frame.data, data, header.DLC);
+    frame.received_at_ms = HAL_GetTick();
+    g_can_rx_seen_count++;
+
+    if (CanRxQueue_PushFromIsr(&g_can_rx_queue, &frame) == 0U) {
         g_can_rx_drop_count++;
         return;
     }
 
-    g_can_rx_frame.standard_id = (uint16_t)header.StdId;
-    g_can_rx_frame.dlc = (uint8_t)header.DLC;
-    memset(g_can_rx_frame.data, 0, sizeof(g_can_rx_frame.data));
-    memcpy(g_can_rx_frame.data, data, header.DLC);
-    __DMB();
-    g_can_rx_ready = 1U;
+    depth = CanRxQueue_GetDepth(&g_can_rx_queue);
+    if (depth > g_can_rx_queue_peak) {
+        g_can_rx_queue_peak = depth;
+    }
 }
 
 void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
 {
     if (hcan == g_can_handle) {
         g_can_last_error = HAL_CAN_GetError(hcan);
+        if ((g_can_last_error & HAL_CAN_ERROR_RX_FOV0) != 0U) {
+            g_can_rx_hw_overrun_count++;
+        }
         if (g_can_faulted == 0U) {
             g_can_error_count++;
             g_can_faulted = 1U;

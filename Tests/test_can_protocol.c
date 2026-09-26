@@ -21,6 +21,11 @@ int main(void)
     CanProtocol_EncodeHeartbeat(0x12345678UL, 0x9AU, 2U, 1U, 0U, frame);
     assert(memcmp(frame, expected_heartbeat, sizeof(frame)) == 0);
 
+    assert(CanProtocol_IsPeerFrameFresh(1000U, 0U, 1000U) == 1U);
+    assert(CanProtocol_IsPeerFrameFresh(1001U, 0U, 1000U) == 0U);
+    assert(CanProtocol_IsPeerFrameFresh(5U, 0xFFFFFFF0UL, 21U) == 1U);
+    assert(CanProtocol_IsPeerFrameFresh(5U, 0xFFFFFFF0UL, 20U) == 0U);
+
     puts("can_protocol tests passed");
     return 0;
 }

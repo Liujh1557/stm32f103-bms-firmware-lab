@@ -1,5 +1,12 @@
 #include "can_protocol.h"
 
+uint8_t CanProtocol_IsPeerFrameFresh(uint32_t now_ms,
+                                      uint32_t received_at_ms,
+                                      uint32_t timeout_ms)
+{
+    return ((uint32_t)(now_ms - received_at_ms) <= timeout_ms) ? 1U : 0U;
+}
+
 void CanProtocol_EncodeStatus(uint16_t cell0_mv,
                               uint32_t fault_flags,
                               uint8_t valid,
