@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* One extra slot separates full from empty in the ISR-producer/main-consumer ring. */
-#define CAN_RX_QUEUE_CAPACITY 32U
+#define CAN_RX_QUEUE_CAPACITY 64U
 #define CAN_RX_QUEUE_STORAGE_SIZE (CAN_RX_QUEUE_CAPACITY + 1U)
 
 typedef struct

@@ -30,7 +30,7 @@ int main(void)
         assert(output.data[0] == (uint8_t)index);
         assert(output.received_at_ms == 1000U + index);
     }
-    assert(CanRxQueue_GetDepth(&queue) == 16U);
+    assert(CanRxQueue_GetDepth(&queue) == CAN_RX_QUEUE_CAPACITY - 16U);
 
     for (index = CAN_RX_QUEUE_CAPACITY;
          index < CAN_RX_QUEUE_CAPACITY + 16U;

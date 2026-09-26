@@ -17,6 +17,7 @@ static CAN_HandleTypeDef *g_can_handle = 0;
 static CanRxQueue g_can_rx_queue = {0};
 static volatile uint32_t g_can_tx_complete_count = 0U;
 static volatile uint32_t g_can_rx_drop_count = 0U;
+static volatile uint32_t g_can_rx_last_drop_ms = 0U;
 static volatile uint32_t g_can_rx_seen_count = 0U;
 static volatile uint32_t g_can_rx_hw_overrun_count = 0U;
 static volatile uint8_t g_can_rx_queue_peak = 0U;
@@ -39,6 +40,7 @@ uint8_t CanIf_Init(CAN_HandleTypeDef *handle)
     CanRxQueue_Init(&g_can_rx_queue);
     g_can_tx_complete_count = 0U;
     g_can_rx_drop_count = 0U;
+    g_can_rx_last_drop_ms = 0U;
     g_can_rx_seen_count = 0U;
     g_can_rx_hw_overrun_count = 0U;
     g_can_rx_queue_peak = 0U;
@@ -152,6 +154,11 @@ void CanIf_Service(void)
 uint32_t CanIf_GetRxDropCount(void)
 {
     return g_can_rx_drop_count;
+}
+
+uint32_t CanIf_GetRxLastDropMs(void)
+{
+    return g_can_rx_last_drop_ms;
 }
 
 uint32_t CanIf_GetRxSeenCount(void)
@@ -272,6 +279,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 
     if (CanRxQueue_PushFromIsr(&g_can_rx_queue, &frame) == 0U) {
         g_can_rx_drop_count++;
+        g_can_rx_last_drop_ms = frame.received_at_ms;
         return;
     }
 

@@ -12,6 +12,7 @@ uint8_t CanIf_TakeRxFrame(CanIfFrame *frame);
 void CanIf_Service(void);
 uint32_t CanIf_GetTxCompleteCount(void);
 uint32_t CanIf_GetRxDropCount(void);
+uint32_t CanIf_GetRxLastDropMs(void);
 uint32_t CanIf_GetRxSeenCount(void);
 uint32_t CanIf_GetRxHwOverrunCount(void);
 uint8_t CanIf_GetRxQueueDepth(void);
