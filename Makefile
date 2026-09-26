@@ -38,6 +38,7 @@ BUILD_DIR = build
 C_SOURCES =  \
 Core/Src/main.c \
 Core/Src/bms_protection.c \
+Core/Src/bms_injection.c \
 Core/Src/uart_protocol.c \
 Core/Src/spi_if.c \
 Core/Src/can_if.c \

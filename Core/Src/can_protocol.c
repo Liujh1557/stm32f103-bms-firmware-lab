@@ -11,6 +11,7 @@ void CanProtocol_EncodeStatus(uint16_t cell0_mv,
                               uint32_t fault_flags,
                               uint8_t valid,
                               uint8_t fault_code,
+                              uint8_t simulated,
                               uint8_t output[CAN_PROTOCOL_DLC])
 {
     output[0] = (uint8_t)cell0_mv;
@@ -19,7 +20,8 @@ void CanProtocol_EncodeStatus(uint16_t cell0_mv,
     output[3] = (uint8_t)(fault_flags >> 8U);
     output[4] = (uint8_t)(fault_flags >> 16U);
     output[5] = (uint8_t)(fault_flags >> 24U);
-    output[6] = valid;
+    output[6] = ((valid != 0U) ? CAN_PROTOCOL_STATUS_VALID_BIT : 0U)
+                | ((simulated != 0U) ? CAN_PROTOCOL_STATUS_SIMULATED_BIT : 0U);
     output[7] = fault_code;
 }
 

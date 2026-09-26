@@ -6,6 +6,8 @@
 #define UART_PROTOCOL_SOF1             0xAAU
 #define UART_PROTOCOL_SOF2             0x55U
 #define UART_PROTOCOL_CMD_PING         0x01U
+#define UART_PROTOCOL_CMD_SIM_CELL0    0x20U
+#define UART_PROTOCOL_CMD_SIM_CLEAR    0x21U
 #define UART_PROTOCOL_MAX_PAYLOAD_SIZE 32U
 
 typedef enum

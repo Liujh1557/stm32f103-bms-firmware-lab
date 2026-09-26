@@ -15,8 +15,11 @@ int main(void)
         0x78U, 0x56U, 0x34U, 0x12U, 0x9AU, 0x02U, 0x01U, 0x00U
     };
 
-    CanProtocol_EncodeStatus(1500U, 0x78563412UL, 1U, 2U, frame);
+    CanProtocol_EncodeStatus(1500U, 0x78563412UL, 1U, 2U, 0U, frame);
     assert(memcmp(frame, expected_status, sizeof(frame)) == 0);
+    CanProtocol_EncodeStatus(1500U, 0x78563412UL, 1U, 2U, 1U, frame);
+    assert(frame[6] == (CAN_PROTOCOL_STATUS_VALID_BIT
+                        | CAN_PROTOCOL_STATUS_SIMULATED_BIT));
 
     CanProtocol_EncodeHeartbeat(0x12345678UL, 0x9AU, 2U, 1U, 0U, frame);
     assert(memcmp(frame, expected_heartbeat, sizeof(frame)) == 0);

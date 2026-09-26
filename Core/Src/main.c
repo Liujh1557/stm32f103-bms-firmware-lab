@@ -29,6 +29,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bms_protection.h"
+#include "bms_injection.h"
 #include "bms_types.h"
 #include "can_if.h"
 #include "can_protocol.h"
@@ -119,6 +120,9 @@ static uint32_t g_can_peer_timeout_count = 0U;
 static uint8_t g_can_peer_online = 0U;
 static uint8_t g_can_heartbeat_sequence = 0U;
 static BmsData g_bms_data = {0};
+static BmsData g_bms_effective_data = {0};
+static BmsInjection g_bms_injection = {0};
+static uint8_t g_bms_sim_active = 0U;
 static BmsConfig g_bms_config = {0};
 static BmsFault g_bms_fault = {0};
 static BmsProtection g_bms_protection = {0};
@@ -202,6 +206,7 @@ int main(void)
   g_bms_config.fault_confirm_ms = 300U;
   g_bms_config.recovery_ms = 500U;
   BmsProtection_Init(&g_bms_protection, &g_bms_fault);
+  BmsInjection_Init(&g_bms_injection);
   SpiIf_Init(&hspi1);
 
   if (CanIf_Init(&hcan) == 0U) {
@@ -347,8 +352,12 @@ static void Task_100ms(void)
 {
   count_100ms++;
   CanIf_Service();
+  g_bms_sim_active = BmsInjection_Apply(&g_bms_injection,
+                                         &g_bms_data,
+                                         g_system_ms,
+                                         &g_bms_effective_data);
   BmsProtection_Update(&g_bms_protection,
-                       &g_bms_data,
+                       &g_bms_effective_data,
                        &g_bms_config,
                        &g_bms_fault,
                        100U);
@@ -387,14 +396,16 @@ static void Task_1000ms(void)
 
   length = snprintf((char *)g_uart_log_buffer,
                     sizeof(g_uart_log_buffer),
-                    "t=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu,spi_busy=%u,spi_ok=%u,spi_n=%lu,spi_mis=%lu,spi_err=%lu,spi_rx=%02X%02X%02X%02X,can_q=%lu,can_tx=%lu,can_rx=%lu,can_mis=%lu,can_err=%lu,can_fault=%u,can_le=0x%08lX,can_drop=%lu,can_drop_t=%lu,can_seen=%lu,can_buf=%u,can_peak=%u,can_hwov=%lu,can_rec=%lu,can_rf=%lu,can_peer=%u,can_to=%lu,can_id=%03X,can_data=%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
+                    "t=%lu,valid=%u,adc_busy=%u,frames=%lu,adc_err=%lu,fn=%u,cell0=%u,adc_cell0=%u,sim=%u,raw0=%u,avg0=%u,fault=0x%08lx,code=%u,latch=%u,pstate=%u,tx=%lu,tx_drop=%lu,rx=%lu,rx_drop=%lu,uart_err=%lu,crc_err=%lu,proto_err=%lu,spi_busy=%u,spi_ok=%u,spi_n=%lu,spi_mis=%lu,spi_err=%lu,spi_rx=%02X%02X%02X%02X,can_q=%lu,can_tx=%lu,can_rx=%lu,can_mis=%lu,can_err=%lu,can_fault=%u,can_le=0x%08lX,can_drop=%lu,can_drop_t=%lu,can_seen=%lu,can_buf=%u,can_peak=%u,can_hwov=%lu,can_rec=%lu,can_rf=%lu,can_peer=%u,can_to=%lu,can_id=%03X,can_data=%02X%02X%02X%02X%02X%02X%02X%02X\r\n",
                     (unsigned long)g_system_ms,
-                    (unsigned int)g_bms_data.valid,
+                    (unsigned int)g_bms_effective_data.valid,
                     (unsigned int)g_adc_busy,
                     (unsigned long)g_adc_frame_count,
                     (unsigned long)g_adc_error_count,
                     (unsigned int)g_adc_filter_count,
+                    (unsigned int)g_bms_effective_data.cell_voltage_mv[0],
                     (unsigned int)g_bms_data.cell_voltage_mv[0],
+                    (unsigned int)g_bms_sim_active,
                     (unsigned int)g_bms_data.adc_raw[0],
                     (unsigned int)g_bms_data.adc_filtered[0],
                     (unsigned long)g_bms_fault.flags,
@@ -514,10 +525,11 @@ static void SendCanStatus(void)
     return;
   }
 
-  CanProtocol_EncodeStatus(g_bms_data.cell_voltage_mv[0],
+  CanProtocol_EncodeStatus(g_bms_effective_data.cell_voltage_mv[0],
                            g_bms_fault.flags,
-                           g_bms_data.valid,
+                           g_bms_effective_data.valid,
                            (uint8_t)g_bms_fault.active_code,
+                           g_bms_sim_active,
                            frame);
 
   if (CanIf_SendStandard(CAN_PROTOCOL_STATUS_ID,
@@ -600,6 +612,7 @@ static void ProcessUartRx(void)
   UartProtocolFrame frame;
   UartProtocolResult result;
   int response_length;
+  uint16_t requested_mv;
 
   if ((g_uart_rx_frame_ready == 0U) || (g_uart_tx_busy != 0U)) {
     return;
@@ -613,8 +626,45 @@ static void ProcessUartRx(void)
       && (frame.command == UART_PROTOCOL_CMD_PING)
       && (frame.payload_length == 0U)) {
     response_length = snprintf((char *)g_uart_log_buffer,
-                               sizeof(g_uart_log_buffer),
-                               "ACK PING CRC=OK\r\n");
+                                sizeof(g_uart_log_buffer),
+                                "ACK PING CRC=OK\r\n");
+  } else if ((result == UART_PROTOCOL_OK)
+             && (frame.command == UART_PROTOCOL_CMD_SIM_CELL0)) {
+    if (frame.payload_length != 2U) {
+      g_uart_protocol_error_count++;
+      response_length = snprintf((char *)g_uart_log_buffer,
+                                  sizeof(g_uart_log_buffer),
+                                  "ERR SIM LEN\r\n");
+    } else {
+      requested_mv = (uint16_t)frame.payload[0]
+                     | ((uint16_t)frame.payload[1] << 8U);
+      if (BmsInjection_Set(&g_bms_injection,
+                           requested_mv,
+                           g_system_ms) == 0U) {
+        g_uart_protocol_error_count++;
+        response_length = snprintf((char *)g_uart_log_buffer,
+                                    sizeof(g_uart_log_buffer),
+                                    "ERR SIM RANGE\r\n");
+      } else {
+        response_length = snprintf((char *)g_uart_log_buffer,
+                                    sizeof(g_uart_log_buffer),
+                                    "ACK SIM %u mV\r\n",
+                                    (unsigned int)requested_mv);
+      }
+    }
+  } else if ((result == UART_PROTOCOL_OK)
+             && (frame.command == UART_PROTOCOL_CMD_SIM_CLEAR)) {
+    if (frame.payload_length != 0U) {
+      g_uart_protocol_error_count++;
+      response_length = snprintf((char *)g_uart_log_buffer,
+                                  sizeof(g_uart_log_buffer),
+                                  "ERR SIM LEN\r\n");
+    } else {
+      BmsInjection_Clear(&g_bms_injection);
+      response_length = snprintf((char *)g_uart_log_buffer,
+                                  sizeof(g_uart_log_buffer),
+                                  "ACK SIM CLEAR\r\n");
+    }
   } else if (result == UART_PROTOCOL_ERROR_CRC) {
     g_uart_crc_error_count++;
     response_length = snprintf((char *)g_uart_log_buffer,
