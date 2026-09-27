@@ -12,6 +12,7 @@ Release/
 *.map
 
 # Editor and OS-local files
+.vscode/
 .idea/
 .DS_Store
 Thumbs.db
